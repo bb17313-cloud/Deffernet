@@ -17,6 +17,7 @@ FINVIZ_HEADERS = {
     "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
 }
 
+# قائمة الأسهم المحددة للمتابعة
 US_STOCKS = [
     "NB", "RKLB", "LCUT", "QSI", "WWR", "QUBT", "EVLV", "QS", "CSCO", "GRRR",
     "RZLV", "CMPX", "PANW", "NNE", "S", "AUR", "ARAY", "ASTS", "KOPN", "SATL",
@@ -62,6 +63,7 @@ def save_state(alerted_list):
 
 
 class FinvizRowsParser(HTMLParser):
+    """يقرأ صفوف جدول الفاحص مباشرة من Finviz"""
     def __init__(self):
         super().__init__()
         self.rows = []
@@ -99,6 +101,7 @@ class FinvizRowsParser(HTMLParser):
 
 
 def fetch_custom_stocks_data(tickers, batch_size=40):
+    """جلب البيانات الأساسية والفنية من Finviz (فاصل يومي)"""
     stocks_list = []
     seen = set()
 
@@ -170,13 +173,13 @@ def process_channel_strategy(session_name, stocks):
         if not ticker or price is None or price <= 0:
             continue
 
-        # شروط السيولة وتغير السعر (1% أو أكثر)
-        if volume is None or volume < 200000:
+        # فلاتر السيولة ونطاق الصعود اليومي
+        if volume is None or volume < 500000:
             continue
-        if change is None or change < 1.0: 
+        if change is None or change < 1.5 or change > 8.0: 
             continue
 
-        # منع التكرار: إذا تم إرسال تنبيه لهذا السهم اليوم مسبقاً، تخطاه
+        # منع تكرار إرسال التنبيه لنفس السهم اليوم
         if ticker in alerted_stocks:
             continue
 
@@ -186,13 +189,14 @@ def process_channel_strategy(session_name, stocks):
         finviz_url = f"https://finviz.com/quote.ashx?t={ticker}"
 
         message = (
-            f"🚨 <b>تنبيه فلتر كسر القناة (Call)</b> · {html.escape(session_name)}\n\n"
-            f"🔹 <b>{html.escape(ticker)}</b>\n"
-            f"💵 سعر الدخول: <code>${price:.2f}</code> · 📈 التغير: <code>+{change:.2f}%</code>\n"
+            f"🎯 <b>اختبار رادار كسر القناة (الفاصل اليومي)</b> · {html.escape(session_name)}\n\n"
+            f"🔹 السهم: <b>{html.escape(ticker)}</b>\n"
+            f"💵 السعر الحالي: <code>${price:.2f}</code>\n"
+            f"📈 التغير اليومي: <code>+{change:.2f}%</code>\n"
             f"📊 الحجم: <code>{stock.get('volume', '-')}</code>\n"
             f"🛑 <b>وقف الخسارة المقترح:</b> <code>${stop_loss:.2f}</code>\n\n"
-            f"✨ <i>تحقق نموذج الشموع الثلاث (اختراق المقاومة + إعادة الاختبار + التأكيد الصعودي)</i>\n\n"
-            f"📈 <a href='{tv_url}'>TradingView</a> | 📊 <a href='{finviz_url}'>Finviz</a>"
+            f"✅ <i>فحص ناجح بناءً على إغلاق ونطاق الشمعة اليومية.</i>\n\n"
+            f"🔗 <a href='{tv_url}'>TradingView</a> | <a href='{finviz_url}'>Finviz</a>"
         )
 
         if send_telegram_message(message, parse_mode="HTML"):
@@ -204,14 +208,11 @@ def process_channel_strategy(session_name, stocks):
     return sent
 
 
-def get_market_session():
-    # مؤقتاً نجعلها تعمل مباشرة للتجربة، ويمكنك إرجاع الشروط لاحقاً
-    return "Test Session 🔔"
-
-
 def main():
-    print("🚀 بدء تنفيذ فحص رادار استراتيجية كسر القناة...")
-    session_name = get_market_session()
+    print("🚀 بدء تنفيذ الفحص التجريبي الفوري...")
+    
+    # فرض اسم الجلسة للتجربة الفورية الآن بغض النظر عن وقت السوق
+    session_name = "Test Session 🔔 (Manual Test)"
 
     print(f"⏳ [{session_name}] جلب بيانات الأسهم من Finviz...")
     stocks = fetch_custom_stocks_data(US_STOCKS)
