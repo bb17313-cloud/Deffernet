@@ -37,24 +37,26 @@ def load_state():
             with open(STATE_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 if data.get("date") == today:
-                    return data.get("alerted", [])
-        except Exception:
-            pass
-    return []
+                    # إرجاع الأسهم كمجموعة (Set) لمنع التكرار تماماً
+                    return set(s.upper() for s in data.get("alerted", []))
+        except Exception as e:
+            print(f"⚠️ خطأ في قراءة ملف الحالة: {e}")
+    return set()
 
 
-def save_state(alerted_list):
+def save_state(alerted_set):
     ny_tz = pytz.timezone('America/New_York')
     today = datetime.now(ny_tz).strftime("%Y-%m-%d")
     data = {
         "date": today,
-        "alerted": alerted_list
+        "alerted": list(alerted_set)
     }
     try:
         with open(STATE_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=4)
+        print(f"💾 تم حفظ حالة الأسهم المُنبّه بها بنجاح: {list(alerted_set)}")
     except Exception as e:
-        print(f"⚠️ خطأ في حفظ الحالة: {e}")
+        print(f"⚠️ خطأ في حفظ حالة السهم: {e}")
 
 
 def send_telegram_message(message, parse_mode="HTML"):
@@ -83,8 +85,14 @@ def analyze_and_scan_stocks(tickers, session_name):
     print(f"⏳ جلب وتحليل بيانات {len(tickers)} سهم...")
 
     for ticker in tickers:
+        ticker_upper = ticker.strip().upper()
+        
+        # 1. فحص فوري لمنع التكرار قبل معالجة السهم
+        if ticker_upper in alerted_stocks:
+            continue
+
         try:
-            stock_data = yf.Ticker(ticker)
+            stock_data = yf.Ticker(ticker_upper)
             df = stock_data.history(period="1mo")
 
             if df.empty or len(df) < 10:
@@ -109,16 +117,13 @@ def analyze_and_scan_stocks(tickers, session_name):
             if current_price < sma_10:
                 continue
 
-            if ticker in alerted_stocks:
-                continue
-
             stop_loss = current_price * 0.975
-            tv_url = f"https://www.tradingview.com/chart/?symbol={ticker}"
-            finviz_url = f"https://finviz.com/quote.ashx?t={ticker}"
+            tv_url = f"https://www.tradingview.com/chart/?symbol={ticker_upper}"
+            finviz_url = f"https://finviz.com/quote.ashx?t={ticker_upper}"
 
             message = (
                 f"🎯 <b>رادار كسر القناة (تصفية ذكية)</b> · {html.escape(session_name)}\n\n"
-                f"🔹 السهم: <b>{html.escape(ticker)}</b>\n"
+                f"🔹 السهم: <b>{html.escape(ticker_upper)}</b>\n"
                 f"💵 السعر الحالي: <code>${current_price:.2f}</code>\n"
                 f"📈 التغير: <code>+{change_pct:.2f}%</code>\n"
                 f"📊 الحجم: <code>{int(volume):,}</code>\n"
@@ -128,12 +133,12 @@ def analyze_and_scan_stocks(tickers, session_name):
             )
 
             if send_telegram_message(message, parse_mode="HTML"):
-                alerted_stocks.append(ticker)
+                alerted_stocks.add(ticker_upper)  # إضافة السهم للقائمة لمنع تكراره فوراً
                 sent += 1
                 time.sleep(1)
 
         except Exception as e:
-            print(f"⚠️ خطأ في معالجة السهم {ticker}: {e}")
+            print(f"⚠️ خطأ في معالجة السهم {ticker_upper}: {e}")
 
     save_state(alerted_stocks)
     return sent
