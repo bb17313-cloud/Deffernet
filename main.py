@@ -80,43 +80,35 @@ def analyze_and_scan_stocks(tickers, session_name):
     sent = 0
     alerted_stocks = load_state()
 
-    print(جلب وتحليل بيانات {len(tickers)} سهم...)
+    print(f"⏳ جلب وتحليل بيانات {len(tickers)} سهم...")
 
     for ticker in tickers:
         try:
-            # جلب البيانات التاريخية لآخر أيام عبر yfinance
             stock_data = yf.Ticker(ticker)
             df = stock_data.history(period="1mo")
 
             if df.empty or len(df) < 10:
                 continue
 
-            # حساب القيم الحالية والسابقة
             current_price = float(df['Close'].iloc[-1])
             prev_price = float(df['Close'].iloc[-2])
             volume = float(df['Volume'].iloc[-1])
             
-            # حساب نسبة التغير عن إغلاق الأمس
             change_pct = ((current_price - prev_price) / prev_price) * 100
 
-            # حساب المتوسط المتحرك البسيط أو الأسي (مثلا SMA 10)
             df['SMA10'] = df['Close'].rolling(window=10).mean()
             sma_10 = float(df['SMA10'].iloc[-1])
 
-            # شروط التصفية الدقيقة:
-            # 1. التغير الإيجابي ضمن نطاق الاختراق (بين 1.5% و 8%)
+            # شروط التصفية الذكية
             if change_pct < 1.5 or change_pct > 8.0:
                 continue
 
-            # 2. شرط السيولة (حجم تداول لا يقل عن 500 ألف)
             if volume < 500000:
                 continue
 
-            # 3. شرط الاتجاه: يجب أن يكون السعر أعلى من متوسط 10 أيام (لتجنب الأسهم الهابطة في القاع)
             if current_price < sma_10:
                 continue
 
-            # 4. منع التكرار لنفس السهم اليوم
             if ticker in alerted_stocks:
                 continue
 
@@ -125,7 +117,7 @@ def analyze_and_scan_stocks(tickers, session_name):
             finviz_url = f"https://finviz.com/quote.ashx?t={ticker}"
 
             message = (
-                f"🎯 <b>رادار كسر القناة (تصفية ذكية عبر GitHub)</b> · {html.escape(session_name)}\n\n"
+                f"🎯 <b>رادار كسر القناة (تصفية ذكية)</b> · {html.escape(session_name)}\n\n"
                 f"🔹 السهم: <b>{html.escape(ticker)}</b>\n"
                 f"💵 السعر الحالي: <code>${current_price:.2f}</code>\n"
                 f"📈 التغير: <code>+{change_pct:.2f}%</code>\n"
@@ -149,8 +141,6 @@ def analyze_and_scan_stocks(tickers, session_name):
 
 def main():
     print("🚀 بدء تنفيذ رادار غيت هاب الذكي...")
-    
-    # جلسة للتجربة الفورية (يمكنك تغييرها لاحقاً لترتبط بأوقات السوق)
     session_name = "GitHub Smart Radar 🔔"
 
     sent = analyze_and_scan_stocks(US_STOCKS, session_name)
