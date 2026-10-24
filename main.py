@@ -192,12 +192,19 @@ def get_market_session():
 
 
 def main():
-    print("🚀 بدء تنفيذ فحص رادار استراتيجية كسر القناة...")
-    session_name = get_market_session()
+    print("🚀 بدء تنفيذ فحص رادار استراتيجية كسر القناة (تخطي وقت السوق للتجربة)...")
+    
+    # فرض اسم الجلسة مؤقتاً للتجربة الفورية
+    session_name = "Test Session 🔔"
 
-    if not session_name:
-        print("💤 السوق مغلق حالياً أو في عطلة نهاية الأسبوع.")
-        return
+    print(f"⏳ [{session_name}] جلب بيانات الأسهم من Finviz...")
+    stocks = fetch_custom_stocks_data(US_STOCKS)
+    if stocks:
+        sent = process_channel_strategy(session_name, stocks)
+        print(f"✅ تم الانتهاء وإرسال {sent} تنبيه بنجاح.")
+    else:
+        print("⚠️ لم يتم العثور على بيانات للأسهم.")
+
 
     print(f"⏳ [{session_name}] جلب بيانات الأسهم من Finviz...")
     stocks = fetch_custom_stocks_data(US_STOCKS)
