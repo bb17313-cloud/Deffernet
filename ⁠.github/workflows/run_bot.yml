@@ -1,5 +1,9 @@
 
-name: Finviz Stock Radar Bot
+name: CI/CD Main Pipeline  # يمكنك تسميته بما تشاء
+on:
+  push:
+    branches: [ "main" ]
+
 
 on:
   schedule:
