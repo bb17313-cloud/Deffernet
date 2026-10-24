@@ -1,15 +1,12 @@
+name: CI/CD Main Pipeline
 
-name: CI/CD Main Pipeline  # يمكنك تسميته بما تشاء
 on:
   push:
     branches: [ "main" ]
-
-
-on:
   schedule:
-    # يعمل تلقائياً كل 5 إلى 10 دقائق خلال أوقات الجلسات (Pre-Market, Main, Post-Market) من الإثنين للجمعة
+    # يعمل تلقائياً كل 10 دقائق من الإثنين للجمعة
     - cron: '0/10 9-23 * * 1-5'
-  workflow_dispatch: # يتيح لك تشغيله يدوياً متى شئت من واجهة GitHub
+  workflow_dispatch: # يتيح لك تشغيله يدوياً متى شئت
 
 jobs:
   run-bot:
