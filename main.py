@@ -2,10 +2,10 @@ import os
 import time
 import html
 import json
-from html.parser import HTMLParser
 from datetime import datetime
 import pytz
 import requests
+import yfinance as yf
 
 # قراءة الإعدادات
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -13,11 +13,6 @@ CHAT_ID = os.getenv("CHAT_ID")
 
 STATE_FILE = "alerted_stocks.json"
 
-FINVIZ_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
-}
-
-# قائمة الأسهم المحددة للمتابعة
 US_STOCKS = [
     "NB", "RKLB", "LCUT", "QSI", "WWR", "QUBT", "EVLV", "QS", "CSCO", "GRRR",
     "RZLV", "CMPX", "PANW", "NNE", "S", "AUR", "ARAY", "ASTS", "KOPN", "SATL",
@@ -59,79 +54,7 @@ def save_state(alerted_list):
         with open(STATE_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=4)
     except Exception as e:
-        print(f"⚠️ خطأ في حفظ حالة السهم: {e}")
-
-
-class FinvizRowsParser(HTMLParser):
-    """يقرأ صفوف جدول الفاحص مباشرة من Finviz"""
-    def __init__(self):
-        super().__init__()
-        self.rows = []
-        self.current_row = None
-        self.cell_id = None
-        self.cell_depth = 0
-        self.cell_text = []
-
-    def handle_starttag(self, tag, attrs):
-        if tag != "div":
-            return
-        a = dict(attrs)
-        if self.cell_id is not None:
-            self.cell_depth += 1
-            return
-        if "data-row-key" in a:
-            self.current_row = {"row_key": a["data-row-key"]}
-            self.rows.append(self.current_row)
-        elif self.current_row is not None and "data-column-id" in a:
-            self.cell_id = a["data-column-id"]
-            self.cell_depth = 1
-            self.cell_text = []
-
-    def handle_endtag(self, tag):
-        if tag != "div" or self.cell_id is None:
-            return
-        self.cell_depth -= 1
-        if self.cell_depth == 0:
-            self.current_row[self.cell_id] = "".join(self.cell_text).strip()
-            self.cell_id = None
-
-    def handle_data(self, data):
-        if self.cell_id is not None:
-            self.cell_text.append(data)
-
-
-def fetch_custom_stocks_data(tickers, batch_size=40):
-    """جلب البيانات الأساسية والفنية من Finviz (فاصل يومي)"""
-    stocks_list = []
-    seen = set()
-
-    for i in range(0, len(tickers), batch_size):
-        batch = tickers[i:i + batch_size]
-        tickers_param = ",".join(batch)
-        url = f"https://finviz.com/screener.ashx?v=111&t={tickers_param}"
-
-        try:
-            res = requests.get(url, headers=FINVIZ_HEADERS, timeout=20)
-            res.raise_for_status()
-            parser = FinvizRowsParser()
-            parser.feed(res.text)
-
-            for row in parser.rows:
-                key = str(row.get("row_key", "")).strip().upper()
-                if not key or key in seen:
-                    continue
-                seen.add(key)
-                stocks_list.append({
-                    "row_key": key,
-                    "price": row.get("price"),
-                    "change": row.get("change"),
-                    "volume": row.get("volume"),
-                })
-            time.sleep(1.5)
-        except Exception as e:
-            print(f"⚠️ خطأ في جلب بيانات Finviz: {e}")
-
-    return stocks_list
+        print(f"⚠️ خطأ في حفظ الحالة: {e}")
 
 
 def send_telegram_message(message, parse_mode="HTML"):
@@ -153,74 +76,85 @@ def send_telegram_message(message, parse_mode="HTML"):
         return False
 
 
-def to_float(value):
-    try:
-        return float(str(value).replace(",", "").replace("%", "").strip())
-    except (TypeError, ValueError):
-        return None
-
-
-def process_channel_strategy(session_name, stocks):
+def analyze_and_scan_stocks(tickers, session_name):
     sent = 0
     alerted_stocks = load_state()
 
-    for stock in stocks:
-        ticker = str(stock.get('row_key', '')).strip().upper()
-        price = to_float(stock.get('price'))
-        change = to_float(stock.get('change'))
-        volume = to_float(stock.get('volume'))
+    print(جلب وتحليل بيانات {len(tickers)} سهم...)
 
-        if not ticker or price is None or price <= 0:
-            continue
+    for ticker in tickers:
+        try:
+            # جلب البيانات التاريخية لآخر أيام عبر yfinance
+            stock_data = yf.Ticker(ticker)
+            df = stock_data.history(period="1mo")
 
-        # فلاتر السيولة ونطاق الصعود اليومي
-        if volume is None or volume < 500000:
-            continue
-        if change is None or change < 1.5 or change > 8.0: 
-            continue
+            if df.empty or len(df) < 10:
+                continue
 
-        # منع تكرار إرسال التنبيه لنفس السهم اليوم
-        if ticker in alerted_stocks:
-            continue
+            # حساب القيم الحالية والسابقة
+            current_price = float(df['Close'].iloc[-1])
+            prev_price = float(df['Close'].iloc[-2])
+            volume = float(df['Volume'].iloc[-1])
+            
+            # حساب نسبة التغير عن إغلاق الأمس
+            change_pct = ((current_price - prev_price) / prev_price) * 100
 
-        stop_loss = price * 0.975
+            # حساب المتوسط المتحرك البسيط أو الأسي (مثلا SMA 10)
+            df['SMA10'] = df['Close'].rolling(window=10).mean()
+            sma_10 = float(df['SMA10'].iloc[-1])
 
-        tv_url = f"https://www.tradingview.com/chart/?symbol={ticker}"
-        finviz_url = f"https://finviz.com/quote.ashx?t={ticker}"
+            # شروط التصفية الدقيقة:
+            # 1. التغير الإيجابي ضمن نطاق الاختراق (بين 1.5% و 8%)
+            if change_pct < 1.5 or change_pct > 8.0:
+                continue
 
-        message = (
-            f"🎯 <b>اختبار رادار كسر القناة (الفاصل اليومي)</b> · {html.escape(session_name)}\n\n"
-            f"🔹 السهم: <b>{html.escape(ticker)}</b>\n"
-            f"💵 السعر الحالي: <code>${price:.2f}</code>\n"
-            f"📈 التغير اليومي: <code>+{change:.2f}%</code>\n"
-            f"📊 الحجم: <code>{stock.get('volume', '-')}</code>\n"
-            f"🛑 <b>وقف الخسارة المقترح:</b> <code>${stop_loss:.2f}</code>\n\n"
-            f"✅ <i>فحص ناجح بناءً على إغلاق ونطاق الشمعة اليومية.</i>\n\n"
-            f"🔗 <a href='{tv_url}'>TradingView</a> | <a href='{finviz_url}'>Finviz</a>"
-        )
+            # 2. شرط السيولة (حجم تداول لا يقل عن 500 ألف)
+            if volume < 500000:
+                continue
 
-        if send_telegram_message(message, parse_mode="HTML"):
-            alerted_stocks.append(ticker)
-            sent += 1
-            time.sleep(1)
+            # 3. شرط الاتجاه: يجب أن يكون السعر أعلى من متوسط 10 أيام (لتجنب الأسهم الهابطة في القاع)
+            if current_price < sma_10:
+                continue
+
+            # 4. منع التكرار لنفس السهم اليوم
+            if ticker in alerted_stocks:
+                continue
+
+            stop_loss = current_price * 0.975
+            tv_url = f"https://www.tradingview.com/chart/?symbol={ticker}"
+            finviz_url = f"https://finviz.com/quote.ashx?t={ticker}"
+
+            message = (
+                f"🎯 <b>رادار كسر القناة (تصفية ذكية عبر GitHub)</b> · {html.escape(session_name)}\n\n"
+                f"🔹 السهم: <b>{html.escape(ticker)}</b>\n"
+                f"💵 السعر الحالي: <code>${current_price:.2f}</code>\n"
+                f"📈 التغير: <code>+{change_pct:.2f}%</code>\n"
+                f"📊 الحجم: <code>{int(volume):,}</code>\n"
+                f"🛑 <b>وقف الخسارة:</b> <code>${stop_loss:.2f}</code>\n\n"
+                f"✅ <i>الشروط: صعود إيجابي + سيولة عالية + السعر فوق متوسط 10 أيام.</i>\n\n"
+                f"🔗 <a href='{tv_url}'>TradingView</a> | <a href='{finviz_url}'>Finviz</a>"
+            )
+
+            if send_telegram_message(message, parse_mode="HTML"):
+                alerted_stocks.append(ticker)
+                sent += 1
+                time.sleep(1)
+
+        except Exception as e:
+            print(f"⚠️ خطأ في معالجة السهم {ticker}: {e}")
 
     save_state(alerted_stocks)
     return sent
 
 
 def main():
-    print("🚀 بدء تنفيذ الفحص التجريبي الفوري...")
+    print("🚀 بدء تنفيذ رادار غيت هاب الذكي...")
     
-    # فرض اسم الجلسة للتجربة الفورية الآن بغض النظر عن وقت السوق
-    session_name = "Test Session 🔔 (Manual Test)"
+    # جلسة للتجربة الفورية (يمكنك تغييرها لاحقاً لترتبط بأوقات السوق)
+    session_name = "GitHub Smart Radar 🔔"
 
-    print(f"⏳ [{session_name}] جلب بيانات الأسهم من Finviz...")
-    stocks = fetch_custom_stocks_data(US_STOCKS)
-    if stocks:
-        sent = process_channel_strategy(session_name, stocks)
-        print(f"✅ تم الانتهاء وإرسال {sent} تنبيه جديد بنجاح.")
-    else:
-        print("⚠️ لم يتم العثور على بيانات للأسهم.")
+    sent = analyze_and_scan_stocks(US_STOCKS, session_name)
+    print(f"✅ تم الانتهاء وإرسال {sent} تنبيه جديد بنجاح.")
 
 
 if __name__ == "__main__":
