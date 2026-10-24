@@ -1,18 +1,18 @@
 {
     "date": "2026-10-24",
     "alerted": [
-        "AMBA",
-        "PANW",
         "GRRR",
-        "OKTA",
-        "CF",
-        "TEM",
-        "CVX",
-        "DVN",
         "TDC",
+        "CF",
+        "PANW",
         "S",
+        "AMBA",
+        "EONR",
+        "OKTA",
         "LMT",
         "MBOT",
-        "EONR"
+        "DVN",
+        "CVX",
+        "TEM"
     ]
 }
