@@ -1,4 +1,3 @@
-
 import os
 import time
 import html
@@ -30,8 +29,8 @@ US_STOCKS = [
     "INOD", "CMOPF", "YEXT", "LAC", "ALLE", "TYGO", "HIMX", "NVDA", "LAES", "CTMX", "LUNR"
 ]
 
-# سجل التنبيهات اليومي
-alerts_state = {"date": None, "stocks": {}}
+# سجل التنبيهات المؤقت للتشغيل الحالي
+alerts_state = {}
 
 
 class FinvizRowsParser(HTMLParser):
@@ -127,14 +126,6 @@ def send_telegram_message(message, parse_mode="HTML"):
         return False
 
 
-def get_alert_state():
-    today = datetime.now(pytz.timezone('America/New_York')).strftime("%Y-%m-%d")
-    if alerts_state["date"] != today:
-        alerts_state["date"] = today
-        alerts_state["stocks"] = {}
-    return alerts_state["stocks"]
-
-
 def to_float(value):
     try:
         return float(str(value).replace(",", "").replace("%", "").strip())
@@ -143,7 +134,6 @@ def to_float(value):
 
 
 def process_channel_strategy(session_name, stocks):
-    state = get_alert_state()
     sent = 0
 
     for stock in stocks:
@@ -158,25 +148,17 @@ def process_channel_strategy(session_name, stocks):
         # تطبيق شروط السيولة والزخم المعتمدة للاختراق
         if volume is None or volume < 200000:
             continue
-        if change is None or change < 1.0: # شرط الزخم وصعود السعر
+        if change is None or change < 1.0: 
             continue
 
         key = f"{session_name}:{ticker}"
-        last = state.get(key)
-
-        if last and price <= last["price"]:
-            continue
-
-        alert_no = (last["alert_no"] + 1) if last else 1
-        
-        # حساب تقديري دقيق لمنطقة وقف الخسارة استناداً إلى الشمعة السابقة (الرفض)
         stop_loss = price * 0.975 # وقف خسارة مقترح تحت سعر الدخول بنسبة 2.5%
 
         tv_url = f"https://www.tradingview.com/chart/?symbol={ticker}"
         finviz_url = f"https://finviz.com/quote.ashx?t={ticker}"
 
         message = (
-            f"🚨 <b>تنبيه فلتر كسر القناة (Call) #{alert_no}</b> · {html.escape(session_name)}\n\n"
+            f"🚨 <b>تنبيه فلتر كسر القناة (Call)</b> · {html.escape(session_name)}\n\n"
             f"🔹 <b>{html.escape(ticker)}</b>\n"
             f"💵 سعر الدخول: <code>${price:.2f}</code> · 📈 التغير: <code>+{change:.2f}%</code>\n"
             f"📊 الحجم: <code>{stock.get('volume', '-')}</code>\n"
@@ -186,7 +168,6 @@ def process_channel_strategy(session_name, stocks):
         )
 
         if send_telegram_message(message, parse_mode="HTML"):
-            state[key] = {"price": price, "alert_no": alert_no}
             sent += 1
             time.sleep(1)
 
@@ -210,32 +191,22 @@ def get_market_session():
     return None
 
 
-def main_loop():
-    print("🚀 تم تشغيل رادار استراتيجية كسر القناة (Finviz حصرياً)...w")
-    was_open = False
+def main():
+    print("🚀 بدء تنفيذ فحص رادار استراتيجية كسر القناة...")
+    session_name = get_market_session()
 
-    while True:
-        session_name = get_market_session()
+    if not session_name:
+        print("💤 السوق مغلق حالياً أو في عطلة نهاية الأسبوع.")
+        return
 
-        if session_name:
-            if not was_open:
-                send_telegram_message(f"🟢 *بدء رادار التداول لـ {session_name}*")
-                was_open = True
-
-            print(f"⏳ [{session_name}] جلب بيانات الأسهم من Finviz...")
-            stocks = fetch_custom_stocks_data(US_STOCKS)
-            if stocks:
-                sent = process_channel_strategy(session_name, stocks)
-                print(f"✅ تم إرسال {sent} تنبيه بنجاح.")
-            
-            time.sleep(300) # فحص كل 5 دقائق
-        else:
-            if was_open:
-                send_telegram_message("🔴 *انتهت فترات التداول. يتوقف الرادار مؤقتاً.*")
-                was_open = False
-
-            time.sleep(900)
+    print(f"⏳ [{session_name}] جلب بيانات الأسهم من Finviz...")
+    stocks = fetch_custom_stocks_data(US_STOCKS)
+    if stocks:
+        sent = process_channel_strategy(session_name, stocks)
+        print(f"✅ تم الانتهاء وإرسال {sent} تنبيه بنجاح.")
+    else:
+        print("⚠️ لم يتم العثور على بيانات للأسهم.")
 
 
 if __name__ == "__main__":
-    main_loop()
+    main()
