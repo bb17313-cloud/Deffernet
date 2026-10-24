@@ -1,6 +1,7 @@
 import os
 import time
 import html
+import json
 from html.parser import HTMLParser
 from datetime import datetime
 import pytz
@@ -10,11 +11,12 @@ import requests
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
+STATE_FILE = "alerted_stocks.json"
+
 FINVIZ_HEADERS = {
     "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
 }
 
-# قائمة الأسهم المحددة للمتابعة
 US_STOCKS = [
     "NB", "RKLB", "LCUT", "QSI", "WWR", "QUBT", "EVLV", "QS", "CSCO", "GRRR",
     "RZLV", "CMPX", "PANW", "NNE", "S", "AUR", "ARAY", "ASTS", "KOPN", "SATL",
@@ -29,12 +31,37 @@ US_STOCKS = [
     "INOD", "CMOPF", "YEXT", "LAC", "ALLE", "TYGO", "HIMX", "NVDA", "LAES", "CTMX", "LUNR"
 ]
 
-# سجل التنبيهات المؤقت للتشغيل الحالي
-alerts_state = {}
+
+def load_state():
+    ny_tz = pytz.timezone('America/New_York')
+    today = datetime.now(ny_tz).strftime("%Y-%m-%d")
+    
+    if os.path.exists(STATE_FILE):
+        try:
+            with open(STATE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if data.get("date") == today:
+                    return data.get("alerted", [])
+        except Exception:
+            pass
+    return []
+
+
+def save_state(alerted_list):
+    ny_tz = pytz.timezone('America/New_York')
+    today = datetime.now(ny_tz).strftime("%Y-%m-%d")
+    data = {
+        "date": today,
+        "alerted": alerted_list
+    }
+    try:
+        with open(STATE_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=4)
+    except Exception as e:
+        print(f"⚠️ خطأ في حفظ حالة السهم: {e}")
 
 
 class FinvizRowsParser(HTMLParser):
-    """يقرأ صفوف جدول الفاحص مباشرة من Finviz"""
     def __init__(self):
         super().__init__()
         self.rows = []
@@ -72,7 +99,6 @@ class FinvizRowsParser(HTMLParser):
 
 
 def fetch_custom_stocks_data(tickers, batch_size=40):
-    """جلب البيانات الأساسية والفنية من Finviz"""
     stocks_list = []
     seen = set()
 
@@ -97,8 +123,6 @@ def fetch_custom_stocks_data(tickers, batch_size=40):
                     "price": row.get("price"),
                     "change": row.get("change"),
                     "volume": row.get("volume"),
-                    "sector": row.get("sector", "غير محدد"),
-                    "industry": row.get("industry", "غير محدد"),
                 })
             time.sleep(1.5)
         except Exception as e:
@@ -135,6 +159,7 @@ def to_float(value):
 
 def process_channel_strategy(session_name, stocks):
     sent = 0
+    alerted_stocks = load_state()
 
     for stock in stocks:
         ticker = str(stock.get('row_key', '')).strip().upper()
@@ -145,14 +170,17 @@ def process_channel_strategy(session_name, stocks):
         if not ticker or price is None or price <= 0:
             continue
 
-        # تطبيق شروط السيولة والزخم المعتمدة للاختراق
+        # شروط السيولة وتغير السعر (1% أو أكثر)
         if volume is None or volume < 200000:
             continue
         if change is None or change < 1.0: 
             continue
 
-        key = f"{session_name}:{ticker}"
-        stop_loss = price * 0.975 # وقف خسارة مقترح تحت سعر الدخول بنسبة 2.5%
+        # منع التكرار: إذا تم إرسال تنبيه لهذا السهم اليوم مسبقاً، تخطاه
+        if ticker in alerted_stocks:
+            continue
+
+        stop_loss = price * 0.975
 
         tv_url = f"https://www.tradingview.com/chart/?symbol={ticker}"
         finviz_url = f"https://finviz.com/quote.ashx?t={ticker}"
@@ -168,49 +196,28 @@ def process_channel_strategy(session_name, stocks):
         )
 
         if send_telegram_message(message, parse_mode="HTML"):
+            alerted_stocks.append(ticker)
             sent += 1
             time.sleep(1)
 
+    save_state(alerted_stocks)
     return sent
 
 
 def get_market_session():
-    ny_tz = pytz.timezone('America/New_York')
-    now_ny = datetime.now(ny_tz)
-
-    if now_ny.weekday() >= 5:
-        return None
-
-    current_time = now_ny.time()
-    if datetime.strptime("09:30", "%H:%M").time() <= current_time < datetime.strptime("16:00", "%H:%M").time():
-        return "Main Session 🔔"
-    elif datetime.strptime("04:00", "%H:%M").time() <= current_time < datetime.strptime("09:30", "%H:%M").time():
-        return "Pre-Market 🌅"
-    elif datetime.strptime("16:00", "%H:%M").time() <= current_time <= datetime.strptime("20:00", "%H:%M").time():
-        return "Post-Market 🌆"
-    return None
+    # مؤقتاً نجعلها تعمل مباشرة للتجربة، ويمكنك إرجاع الشروط لاحقاً
+    return "Test Session 🔔"
 
 
 def main():
-    print("🚀 بدء تنفيذ فحص رادار استراتيجية كسر القناة (تخطي وقت السوق للتجربة)...")
-    
-    # فرض اسم الجلسة مؤقتاً للتجربة الفورية
-    session_name = "Test Session 🔔"
+    print("🚀 بدء تنفيذ فحص رادار استراتيجية كسر القناة...")
+    session_name = get_market_session()
 
     print(f"⏳ [{session_name}] جلب بيانات الأسهم من Finviz...")
     stocks = fetch_custom_stocks_data(US_STOCKS)
     if stocks:
         sent = process_channel_strategy(session_name, stocks)
-        print(f"✅ تم الانتهاء وإرسال {sent} تنبيه بنجاح.")
-    else:
-        print("⚠️ لم يتم العثور على بيانات للأسهم.")
-
-
-    print(f"⏳ [{session_name}] جلب بيانات الأسهم من Finviz...")
-    stocks = fetch_custom_stocks_data(US_STOCKS)
-    if stocks:
-        sent = process_channel_strategy(session_name, stocks)
-        print(f"✅ تم الانتهاء وإرسال {sent} تنبيه بنجاح.")
+        print(f"✅ تم الانتهاء وإرسال {sent} تنبيه جديد بنجاح.")
     else:
         print("⚠️ لم يتم العثور على بيانات للأسهم.")
 
