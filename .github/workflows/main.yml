@@ -1,7 +1,4 @@
-      - name: Install dependencies
-        run: |
-          pip install requests pytz yfinance
-
+name: CI/CD Main Pipeline
 
 on:
   push:
@@ -9,6 +6,9 @@ on:
   schedule:
     - cron: '0/10 9-23 * * 1-5'
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   run-bot:
@@ -24,7 +24,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install requests pytz
+          pip install requests pytz yfinance
 
       - name: Run Main Bot Script
         env:
@@ -32,3 +32,11 @@ jobs:
           CHAT_ID: ${{ secrets.CHAT_ID }}
         run: |
           python main.py
+
+      - name: Commit and push updated state
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.io"
+          git add alerted_stocks.json
+          git commit -m "Update daily alerted stocks state [skip ci]" || echo "No changes to commit"
+          git push
