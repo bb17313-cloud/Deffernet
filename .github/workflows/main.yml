@@ -1,4 +1,7 @@
-name: CI/CD Main Pipeline
+      - name: Install dependencies
+        run: |
+          pip install requests pytz yfinance
+
 
 on:
   push:
