@@ -1,18 +1,18 @@
 {
-    "date": "2026-10-24",
+    "date": "2026-10-26",
     "alerted": [
-        "S",
-        "LMT",
-        "GRRR",
-        "AMBA",
-        "MBOT",
-        "OKTA",
-        "CF",
-        "TEM",
-        "TDC",
-        "EONR",
         "CVX",
+        "CF",
+        "EONR",
+        "MBOT",
+        "LMT",
+        "OKTA",
+        "DVN",
+        "AMBA",
+        "TDC",
         "PANW",
-        "DVN"
+        "TEM",
+        "S",
+        "GRRR"
     ]
 }
