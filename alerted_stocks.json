@@ -1,18 +1,24 @@
 {
     "date": "2026-10-26",
     "alerted": [
-        "CVX",
         "CF",
+        "RKLB",
         "EONR",
-        "MBOT",
-        "LMT",
-        "OKTA",
+        "QSI",
         "DVN",
-        "AMBA",
-        "TDC",
         "PANW",
+        "NTSK",
+        "GMAB",
+        "GRRR",
+        "AMBA",
+        "MBOT",
+        "OKTA",
         "TEM",
+        "LMT",
+        "TDC",
         "S",
-        "GRRR"
+        "CVX",
+        "APG",
+        "CSCO"
     ]
 }
