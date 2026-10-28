@@ -1,15 +1,28 @@
 {
     "date": "2026-10-28",
     "alerted": [
-        "CTMX",
-        "TEM",
-        "TE",
-        "MVST",
-        "APH",
-        "QSI",
+        "EBS",
+        "CRMD",
+        "EVLV",
+        "ONDS",
+        "ACHR",
         "MBOT",
+        "MVST",
         "KOPN",
+        "RMBS",
+        "AVGO",
+        "BBAI",
+        "CTMX",
+        "TE",
+        "NB",
+        "CORZ",
+        "MUX",
+        "APH",
+        "MLTX",
+        "QSI",
+        "TEM",
+        "YEXT",
         "ATEC",
-        "CORZ"
+        "IBRX"
     ]
 }
