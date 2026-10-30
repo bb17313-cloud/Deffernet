@@ -1,11 +1,12 @@
 {
     "date": "2026-10-30",
     "alerted": [
-        "NVO",
-        "GMAB",
-        "CVX",
         "LEN",
-        "CF",
-        "DVN"
+        "GMAB",
+        "DVN",
+        "CMPX",
+        "CVX",
+        "NVO",
+        "CF"
     ]
 }
