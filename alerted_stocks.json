@@ -2,11 +2,11 @@
     "date": "2026-10-30",
     "alerted": [
         "LEN",
-        "GMAB",
-        "DVN",
-        "CMPX",
         "CVX",
+        "GMAB",
         "NVO",
-        "CF"
+        "CF",
+        "CMPX",
+        "DVN"
     ]
 }
