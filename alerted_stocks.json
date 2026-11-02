@@ -1,12 +1,20 @@
 {
-    "date": "2026-10-30",
+    "date": "2026-11-02",
     "alerted": [
+        "FSLR",
         "LEN",
-        "CVX",
-        "GMAB",
+        "GEV",
+        "APG",
+        "BIRK",
+        "APH",
+        "ARAY",
+        "TPR",
+        "AGNT",
+        "DHI",
+        "GDRX",
+        "YOU",
+        "NKE",
         "NVO",
-        "CF",
-        "CMPX",
-        "DVN"
+        "AA"
     ]
 }
