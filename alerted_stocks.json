@@ -1,13 +1,16 @@
 {
     "date": "2026-11-03",
     "alerted": [
+        "MBOT",
+        "TEM",
+        "EBS",
+        "APG",
+        "APH",
+        "U",
+        "SLDP",
         "MVST",
         "GEV",
-        "APG",
-        "EBS",
-        "APH",
-        "TEM",
         "FSLR",
-        "U"
+        "QS"
     ]
 }
