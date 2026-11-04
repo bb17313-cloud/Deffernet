@@ -2,15 +2,15 @@
     "date": "2026-11-03",
     "alerted": [
         "MBOT",
-        "TEM",
-        "EBS",
-        "APG",
-        "APH",
-        "U",
         "SLDP",
-        "MVST",
-        "GEV",
+        "APH",
+        "EBS",
         "FSLR",
-        "QS"
+        "TEM",
+        "U",
+        "APG",
+        "MVST",
+        "QS",
+        "GEV"
     ]
 }
