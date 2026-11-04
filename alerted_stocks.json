@@ -1,16 +1,21 @@
 {
-    "date": "2026-11-03",
+    "date": "2026-11-04",
     "alerted": [
+        "MSFT",
         "MBOT",
-        "SLDP",
-        "APH",
-        "EBS",
-        "FSLR",
-        "TEM",
+        "GDRX",
+        "NVAX",
+        "TE",
+        "DHI",
+        "BBAI",
+        "NKE",
         "U",
-        "APG",
-        "MVST",
-        "QS",
-        "GEV"
+        "BIRK",
+        "NVO",
+        "AA",
+        "BZAI",
+        "COR",
+        "TPR",
+        "EVLV"
     ]
 }
