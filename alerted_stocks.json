@@ -1,9 +1,18 @@
 {
     "date": "2026-11-06",
     "alerted": [
+        "MUX",
         "FSLR",
+        "DUOL",
         "QS",
-        "MVST",
-        "U"
+        "SLI",
+        "MBOT",
+        "ITRG",
+        "GMAB",
+        "BZAI",
+        "IBRX",
+        "TEM",
+        "U",
+        "MVST"
     ]
 }
