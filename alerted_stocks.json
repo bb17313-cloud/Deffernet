@@ -1,32 +1,9 @@
 {
-    "date": "2026-11-11",
+    "date": "2026-11-12",
     "alerted": [
-        "ACHR",
-        "SATL",
-        "DUOL",
-        "ONDS",
         "MP",
-        "RKLB",
-        "QBTS",
-        "AA",
-        "AMBA",
-        "MLTX",
-        "SMR",
-        "LUNR",
-        "APG",
-        "QNC",
-        "KULR",
-        "MBOT",
-        "S",
-        "WRAP",
-        "AVGO",
-        "GDRX",
-        "ZETA",
-        "RMBS",
-        "APH",
-        "INFQ",
-        "PL",
-        "CSCO",
-        "AUR"
+        "SPCX",
+        "DVN",
+        "AVGO"
     ]
 }
