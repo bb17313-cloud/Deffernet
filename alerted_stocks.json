@@ -1,9 +1,12 @@
 {
     "date": "2026-11-12",
     "alerted": [
-        "MP",
         "SPCX",
-        "DVN",
-        "AVGO"
+        "YOU",
+        "TDC",
+        "AVGO",
+        "LUNR",
+        "MP",
+        "DVN"
     ]
 }
