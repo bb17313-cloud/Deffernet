@@ -1,13 +1,13 @@
 {
     "date": "2026-11-13",
     "alerted": [
-        "COR",
         "DUOL",
-        "NVO",
-        "WWR",
+        "CVX",
+        "COR",
         "MP",
-        "U",
         "TDC",
-        "CVX"
+        "WWR",
+        "U",
+        "NVO"
     ]
 }
