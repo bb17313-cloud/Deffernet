@@ -1,14 +1,10 @@
 {
-    "date": "2026-11-18",
+    "date": "2026-11-19",
     "alerted": [
+        "PANW",
+        "OKTA",
+        "S",
         "MP",
-        "ATEC",
-        "SPCX",
-        "CORZ",
-        "TDC",
-        "AVGO",
-        "ZETA",
-        "CSCO",
-        "PANW"
+        "NTSK"
     ]
 }
