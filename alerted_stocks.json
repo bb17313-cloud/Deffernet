@@ -1,13 +1,16 @@
 {
-    "date": "2026-11-23",
+    "date": "2026-11-24",
     "alerted": [
-        "TDC",
-        "CTMX",
-        "CRMD",
-        "GMAB",
-        "CSCO",
-        "PANW",
         "OKTA",
-        "S"
+        "PANW",
+        "CTMX",
+        "NTSK",
+        "GMAB",
+        "CRMD",
+        "TDC",
+        "CSCO",
+        "RPD",
+        "S",
+        "ALLE"
     ]
 }
