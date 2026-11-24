@@ -1,16 +1,25 @@
 {
     "date": "2026-11-24",
     "alerted": [
-        "OKTA",
-        "PANW",
-        "CTMX",
+        "CMPX",
+        "COR",
+        "ATEC",
         "NTSK",
-        "GMAB",
-        "CRMD",
         "TDC",
-        "CSCO",
-        "RPD",
+        "DHI",
+        "TPR",
         "S",
-        "ALLE"
+        "CRMD",
+        "RPD",
+        "PANW",
+        "GMAB",
+        "AGNT",
+        "LMT",
+        "ALLE",
+        "LEN",
+        "CSCO",
+        "CTMX",
+        "NVO",
+        "OKTA"
     ]
 }
