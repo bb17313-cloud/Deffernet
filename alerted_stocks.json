@@ -1,27 +1,18 @@
 {
-    "date": "2026-11-24",
+    "date": "2026-11-25",
     "alerted": [
-        "NTSK",
-        "ATEC",
-        "CSCO",
-        "ALLE",
-        "CTMX",
-        "LEN",
-        "CMPX",
-        "EVLV",
-        "GMAB",
-        "OKTA",
+        "CRM",
         "NVO",
-        "CRMD",
-        "LMT",
-        "DHI",
+        "GRRR",
+        "U",
+        "LEN",
+        "NKE",
         "COR",
-        "EBS",
-        "TPR",
-        "RPD",
-        "PANW",
         "AGNT",
+        "NTSK",
+        "EVLV",
         "TDC",
-        "S"
+        "DHI",
+        "LMT"
     ]
 }
