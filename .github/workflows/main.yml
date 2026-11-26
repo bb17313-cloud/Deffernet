@@ -2,14 +2,14 @@ name: US Stock Finviz ChanLun Radar
 
 on:
   schedule:
-    # يعمل كل ساعة من الاثنين إلى الجمعة لتغطية Pre-Market وMain وPost-Market (08:00 - 01:00 UTC)
+    # يعمل من الاثنين إلى الجمعة لتغطية Pre-Market وMain وPost-Market (08:00 - 01:00 UTC)
     - cron: "0 0,8-23 * * 1-5"
   workflow_dispatch:
     inputs:
-      chan_interval:
-        description: "الفاصل الزمني لتحليل تشان لون (مثال: 15m, 1h, 1d)"
+      chan_intervals:
+        description: "الأطر الزمنية لتشان لون مفصولة بفاصلة (مثال: 1m,5m,15m,1h,1d)"
         required: false
-        default: "15m"
+        default: "5m,15m,1h,1d"
       interval_seconds:
         description: "فترة التحديث بالثواني داخل الجلسة (الافتراضي 180)"
         required: false
@@ -44,8 +44,7 @@ jobs:
           RADAR_STATE_FILE: "radar_state.json"
           RADAR_INTERVAL_SECONDS: ${{ inputs.interval_seconds || '180' }}
           RADAR_MAX_RUN_SECONDS: "3300"
-          CHAN_INTERVAL: ${{ inputs.chan_interval || '15m' }}
-          CHAN_PERIOD: "5d"
+          CHAN_INTERVALS: ${{ inputs.chan_intervals || '5m,15m,1h,1d' }}
         run: python main.py
 
       - name: Persist radar state
