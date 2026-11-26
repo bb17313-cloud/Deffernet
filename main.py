@@ -5,9 +5,9 @@ import os
 import random
 import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, time as dt_time, timedelta
 from html.parser import HTMLParser
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 import pytz
 import requests
@@ -15,6 +15,9 @@ import yfinance as yf
 from googletrans import Translator
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+
+NY_TZ = pytz.timezone("America/New_York")
+SA_TZ = pytz.timezone("Asia/Riyadh")
 
 BOT_TOKEN = (os.getenv("BOT_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
 CHAT_ID = (os.getenv("CHAT_ID") or os.getenv("TELEGRAM_CHAT_ID") or "").strip()
@@ -27,6 +30,7 @@ MA_TYPE = (os.getenv("STRATEGY_MA_TYPE", "EMA") or "EMA").strip().upper()  # EMA
 
 # دعم جميع الأطر الزمنية المتاحة للأسهم (مفصولة بفاصلة في متغير RADAR_INTERVALS)
 SUPPORTED_INTERVALS = ["1m", "2m", "5m", "15m", "30m", "1h", "4h", "1d", "1wk", "1mo"]
+INTRADAY_INTERVALS = {"1m", "2m", "5m", "15m", "30m", "1h", "4h"}
 RAW_INTERVALS = (os.getenv("RADAR_INTERVALS") or os.getenv("RADAR_INTERVAL") or "5m,15m,1h,1d").strip()
 
 INTERVAL_PERIOD_MAP: Dict[str, str] = {
@@ -41,6 +45,12 @@ INTERVAL_PERIOD_MAP: Dict[str, str] = {
     "1wk": "5y",
     "1mo": "10y",
 }
+
+SESSION_WINDOWS: List[Tuple[str, str, dt_time, dt_time]] = [
+    ("Pre-Market", "الأسهم الفعالة ماقبل السوق", dt_time(4, 0), dt_time(9, 30)),
+    ("Main Session", "الأسهم الفعالة للجلسة الرئيسة", dt_time(9, 30), dt_time(16, 0)),
+    ("Post-Market", "الأسهم الفعالة لجلسة post", dt_time(16, 0), dt_time(20, 0)),
+]
 
 FINVIZ_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
@@ -62,6 +72,7 @@ class Candle:
     low: float
     close: float
     volume: float
+    ny_dt: Optional[datetime] = None
 
 
 @dataclass
@@ -98,9 +109,25 @@ translator = Translator()
 
 
 def to_float(value) -> Optional[float]:
+    if value is None:
+        return None
     try:
-        cleaned = str(value).replace(",", "").replace("%", "").replace("x", "").replace("$", "").strip()
-        return float(cleaned)
+        raw = str(value).strip()
+        if not raw or raw in {"-", "N/A", "nan", "NaN", "None"}:
+            return None
+        multiplier = 1.0
+        upper = raw.upper()
+        if upper.endswith("B"):
+            multiplier = 1_000_000_000.0
+            upper = upper[:-1]
+        elif upper.endswith("M"):
+            multiplier = 1_000_000.0
+            upper = upper[:-1]
+        elif upper.endswith("K"):
+            multiplier = 1_000.0
+            upper = upper[:-1]
+        cleaned = upper.replace(",", "").replace("%", "").replace("x", "").replace("$", "").replace("+", "").strip()
+        return float(cleaned) * multiplier
     except (TypeError, ValueError):
         return None
 
@@ -123,6 +150,17 @@ def is_excluded_sector(stock: dict) -> bool:
     return any(kw in sector or kw in industry for kw in EXCLUDED_SECTOR_KEYWORDS)
 
 
+def get_session_min_volume(session_key: str) -> float:
+    env_map = {
+        "Pre-Market": ("RADAR_MIN_VOL_PRE", 1000.0),
+        "Main Session": ("RADAR_MIN_VOL_MAIN", 10000.0),
+        "Post-Market": ("RADAR_MIN_VOL_POST", 5000.0),
+    }
+    env_name, default_val = env_map.get(session_key, ("RADAR_MIN_VOL_MAIN", 10000.0))
+    parsed = to_float(os.getenv(env_name))
+    return parsed if parsed is not None and parsed >= 0 else default_val
+
+
 def get_active_intervals() -> List[str]:
     selected: List[str] = []
     for part in RAW_INTERVALS.split(","):
@@ -133,12 +171,13 @@ def get_active_intervals() -> List[str]:
 
 
 def load_state() -> dict:
-    today_ny = datetime.now(pytz.timezone("America/New_York")).strftime("%Y-%m-%d")
+    today_ny = datetime.now(NY_TZ).strftime("%Y-%m-%d")
     default_state = {
         "date": today_ny,
         "stocks": {},
-        "last_summary_tickers": [],
+        "last_summary_tickers": {},
         "was_open": False,
+        "last_open_session": None,
     }
     if not os.path.exists(STATE_FILE):
         return default_state
@@ -148,11 +187,14 @@ def load_state() -> dict:
         if data.get("date") != today_ny:
             default_state["was_open"] = bool(data.get("was_open", False))
             return default_state
+        raw_summary = data.get("last_summary_tickers", {})
+        summary_map = raw_summary if isinstance(raw_summary, dict) else {}
         return {
             "date": today_ny,
-            "stocks": data.get("stocks", {}),
-            "last_summary_tickers": data.get("last_summary_tickers", []),
+            "stocks": data.get("stocks", {}) if isinstance(data.get("stocks"), dict) else {},
+            "last_summary_tickers": summary_map,
             "was_open": bool(data.get("was_open", False)),
+            "last_open_session": data.get("last_open_session"),
         }
     except Exception as e:
         print(f"⚠️ تعذر قراءة ملف الحالة {STATE_FILE}: {e}")
@@ -446,6 +488,21 @@ def fetch_sec_filings_only(symbol: str) -> Tuple[str, Optional[str], str]:
     return sec_summary, cik_str_val, latest_accession
 
 
+def parse_candle_ny_dt(ts) -> Optional[datetime]:
+    try:
+        if hasattr(ts, "to_pydatetime"):
+            dt_val = ts.to_pydatetime()
+        elif isinstance(ts, datetime):
+            dt_val = ts
+        else:
+            dt_val = datetime.fromisoformat(str(ts))
+        if dt_val.tzinfo is None:
+            return NY_TZ.localize(dt_val)
+        return dt_val.astimezone(NY_TZ)
+    except Exception:
+        return None
+
+
 def fetch_candles_for_interval(symbol: str, interval: str) -> List[Candle]:
     period = INTERVAL_PERIOD_MAP.get(interval, "30d")
     ticker = yf.Ticker(symbol)
@@ -463,7 +520,9 @@ def fetch_candles_for_interval(symbol: str, interval: str) -> List[Candle]:
             v = to_float(row.get("Volume")) or 0.0
             if None in (o, h, l, c) or min(o, h, l, c) <= 0:
                 continue
-            candles_1h.append(Candle(time=str(ts), open=o, high=h, low=l, close=c, volume=max(0.0, v)))
+            candles_1h.append(
+                Candle(time=str(ts), open=o, high=h, low=l, close=c, volume=max(0.0, v), ny_dt=parse_candle_ny_dt(ts))
+            )
 
         merged_4h: List[Candle] = []
         for idx in range(0, len(candles_1h) - 3, 4):
@@ -476,6 +535,7 @@ def fetch_candles_for_interval(symbol: str, interval: str) -> List[Candle]:
                     low=min(x.low for x in chunk),
                     close=chunk[-1].close,
                     volume=sum(x.volume for x in chunk),
+                    ny_dt=chunk[-1].ny_dt,
                 )
             )
         if len(merged_4h) >= 205:
@@ -494,18 +554,45 @@ def fetch_candles_for_interval(symbol: str, interval: str) -> List[Candle]:
         v = to_float(row.get("Volume")) or 0.0
         if None in (o, h, l, c) or min(o, h, l, c) <= 0:
             continue
-        candles.append(Candle(time=str(ts), open=o, high=h, low=l, close=c, volume=max(0.0, v)))
+        candles.append(
+            Candle(time=str(ts), open=o, high=h, low=l, close=c, volume=max(0.0, v), ny_dt=parse_candle_ny_dt(ts))
+        )
 
     if len(candles) < 205:
         raise ValueError(f"عدد الشموع قليل ({len(candles)}) لحساب المتوسطات والهيكل لـ {symbol} على {interval}")
     return candles
 
 
-def calculate_vwap_series(candles: List[Candle]) -> List[float]:
+def get_session_window_for_dt(dt_ny: datetime) -> Optional[Tuple[str, datetime, datetime]]:
+    if dt_ny.weekday() >= 5:
+        return None
+    day_date = dt_ny.date()
+    t_now = dt_ny.time()
+    for s_key, _, s_start, s_end in SESSION_WINDOWS:
+        if s_start <= t_now < s_end:
+            return (
+                s_key,
+                NY_TZ.localize(datetime.combine(day_date, s_start)),
+                NY_TZ.localize(datetime.combine(day_date, s_end)),
+            )
+    return None
+
+
+def calculate_vwap_series(candles: List[Candle], interval: str = "5m") -> List[float]:
     vwap_vals: List[float] = []
     cum_pv = 0.0
     cum_vol = 0.0
+    active_session_tag: Optional[Tuple[str, str]] = None
+
     for c in candles:
+        if interval in INTRADAY_INTERVALS and c.ny_dt is not None:
+            win = get_session_window_for_dt(c.ny_dt)
+            session_tag = (c.ny_dt.strftime("%Y-%m-%d"), win[0]) if win else None
+            if session_tag is not None and session_tag != active_session_tag:
+                cum_pv = 0.0
+                cum_vol = 0.0
+                active_session_tag = session_tag
+
         tp = (c.high + c.low + c.close) / 3.0
         cum_pv += tp * c.volume
         cum_vol += c.volume
@@ -527,7 +614,6 @@ def calculate_ma_series(closes: List[float], period: int, ma_type: str = "EMA") 
             result[i] = running_sum / period
         return result
 
-    # EMA
     sma_init = sum(closes[:period]) / period
     result[period - 1] = sma_init
     multiplier = 2.0 / (period + 1.0)
@@ -578,7 +664,7 @@ def analyze_single_timeframe(symbol: str, interval: str, live_price: float) -> O
 
     ma100_series = calculate_ma_series(closes, 100, MA_TYPE)
     ma200_series = calculate_ma_series(closes, 200, MA_TYPE)
-    vwap_series = calculate_vwap_series(window_candles)
+    vwap_series = calculate_vwap_series(window_candles, interval=interval)
 
     curr_ma100 = ma100_series[-1]
     curr_ma200 = ma200_series[-1]
@@ -592,13 +678,11 @@ def analyze_single_timeframe(symbol: str, interval: str, live_price: float) -> O
     curr_c = window_candles[-1]
     entry_price = live_price if live_price > 0 else curr_c.close
 
-    # شرط الدخول من VWAP: ارتداد أو ثبات واضح أعلى VWAP
     vwap_rebound = (prev_c.low <= prev_vwap * 1.003) and (entry_price >= curr_vwap * 0.998)
     vwap_above_hold = (prev_c.close >= prev_vwap * 0.998) and (entry_price >= curr_vwap * 0.998)
     if not (vwap_rebound or vwap_above_hold):
         return None
 
-    # وقف الخسارة: كسر VWAP / كسر متوسط 200 / كسر الهيكل (آخر قاع)
     last_swing_low = find_last_swing_low(window_candles, left=3, right=3)
     stop_candidates: List[Tuple[float, str]] = [
         (curr_vwap * 0.998, "كسر VWAP"),
@@ -612,11 +696,9 @@ def analyze_single_timeframe(symbol: str, interval: str, live_price: float) -> O
     if not valid_stops:
         return None
 
-    # اختيار أعلى مستوى وقف أسفل السعر الحالي (الأقرب والأكثر أماناً)
     stop_loss = max(s[0] for s in valid_stops)
     stop_reasons = [s[1] for s in valid_stops]
 
-    # الأهداف (4 أهداف + هدفان بعيدان) من متوسط 100، متوسط 200، والقمم السابقة ضمن 400 شمعة
     swing_highs = find_swing_highs(window_candles, left=3, right=3)
     candidate_levels = sorted(
         set(
@@ -669,53 +751,81 @@ def analyze_all_timeframes(symbol: str, live_price: float) -> List[TimeframeVwap
     return results
 
 
+def is_stock_eligible(
+    stock: dict,
+    session_key: str,
+    positive_only: bool = False,
+    skip_tickers: Optional[Set[str]] = None,
+) -> Optional[dict]:
+    skip_tickers = skip_tickers or set()
+    ticker = str(stock.get("row_key") or stock.get("ticker") or "").strip().upper()
+    if not ticker or not is_us_stock_ticker(ticker) or ticker in skip_tickers:
+        return None
+
+    price = to_float(stock.get("price"))
+    if price is None or price <= 0:
+        return None
+
+    min_volume = get_session_min_volume(session_key)
+    volume = to_float(stock.get("volume"))
+    if volume is None or volume < min_volume:
+        return None
+
+    if is_excluded_sector(stock):
+        return None
+
+    change_val = to_float(stock.get("change"))
+    if positive_only and (change_val is None or change_val <= 0):
+        return None
+
+    change_str = str(stock.get("change", "0%")).strip()
+    if change_val is not None and change_val > 0 and not change_str.startswith("+"):
+        change_str = "+" + change_str
+
+    return {
+        "ticker": ticker,
+        "price": price,
+        "volume": volume,
+        "change": change_val if change_val is not None else 0.0,
+        "change_str": change_str,
+        "raw": stock,
+    }
+
+
 def send_stock_cards(
     session_name: str,
     stocks: List[dict],
     signal_label: str,
     stock_state: dict,
     positive_only: bool = False,
-    skip_tickers: Optional[set] = None,
+    skip_tickers: Optional[Set[str]] = None,
 ) -> int:
     sent = 0
     skip_tickers = skip_tickers or set()
-    min_volume = 1000 if session_name == "Pre-Market" else 10000
 
     for stock in stocks:
-        ticker = str(stock.get("row_key", "")).strip().upper()
-        price = to_float(stock.get("price"))
-        if not ticker or not is_us_stock_ticker(ticker) or price is None or price <= 0:
+        item = is_stock_eligible(stock, session_name, positive_only=positive_only, skip_tickers=skip_tickers)
+        if not item:
             continue
 
-        if ticker in skip_tickers:
-            continue
-
-        volume = to_float(stock.get("volume"))
-        if volume is None or volume < min_volume:
-            continue
-
-        if is_excluded_sector(stock):
-            continue
-
-        if positive_only:
-            change_val = to_float(stock.get("change"))
-            if change_val is None or change_val <= 0:
-                continue
+        ticker = item["ticker"]
+        price = item["price"]
+        raw = item["raw"]
 
         key = f"{session_name}:{ticker}"
         last = stock_state.get(key)
 
-        if last and price <= last["price"]:
+        if last and price <= last.get("price", 0.0):
             continue
 
-        alert_no = (last["alert_no"] + 1) if last else 1
+        alert_no = (last.get("alert_no", 0) + 1) if last else 1
 
         stock_news = fetch_stock_news(ticker)
         sec_summary, cik_val, _ = fetch_sec_filings_only(ticker)
         tf_setups = analyze_all_timeframes(ticker, price)
 
-        rel_vol = str(stock.get("revol", "")).strip() or str(stock.get("rel_volume", "")).strip()
-        float_val = str(stock.get("float", "")).strip()
+        rel_vol = str(raw.get("revol", "")).strip() or str(raw.get("rel_volume", "")).strip()
+        float_val = str(raw.get("float", "")).strip()
 
         tv_url = f"https://www.tradingview.com/chart/?symbol={ticker}"
         sec_page_url = f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={cik_val or ticker}&type=&dateb=&owner=include&count=40"
@@ -724,10 +834,10 @@ def send_stock_cards(
             f"🚨 <b>تنبيه {alert_no}</b> · {html.escape(session_name)} (أسهم فقط)",
             f"📡 Signal: <b>{html.escape(signal_label)}</b>\n",
             f"🔹 <b>{html.escape(ticker)}</b>",
-            f"💵 <code>${price:.2f}</code> · 📈 <code>{html.escape(str(stock.get('change', '-')))}</code>",
-            f"📊 Vol: <code>{html.escape(str(stock.get('volume', '-')))}</code>",
-            f"🏭 القطاع: <code>{html.escape(str(stock.get('sector', '-')))}</code>",
-            f"🏷️ الصناعة: <code>{html.escape(str(stock.get('industry', '-')))}</code>",
+            f"💵 <code>${price:.2f}</code> · 📈 <code>{html.escape(item['change_str'])}</code>",
+            f"📊 Vol: <code>{html.escape(str(raw.get('volume', int(item['volume']))))}</code>",
+            f"🏭 القطاع: <code>{html.escape(str(raw.get('sector', '-')))}</code>",
+            f"🏷️ الصناعة: <code>{html.escape(str(raw.get('industry', '-')))}</code>",
             f"📰 أخبار اليوم: {html.escape(stock_news)}",
         ]
 
@@ -770,26 +880,16 @@ def send_stock_cards(
     return sent
 
 
-def get_market_session_and_name() -> Tuple[Optional[str], Optional[str]]:
-    ny_tz = pytz.timezone("America/New_York")
-    now_ny = datetime.now(ny_tz)
+def get_market_session_and_name(now_ny: Optional[datetime] = None) -> Tuple[Optional[str], Optional[str]]:
+    current_ny = now_ny.astimezone(NY_TZ) if now_ny else datetime.now(NY_TZ)
 
-    if now_ny.weekday() >= 5:
+    if current_ny.weekday() >= 5:
         return None, None
 
-    current_time = now_ny.time()
-
-    pre_start = datetime.strptime("04:00", "%H:%M").time()
-    main_start = datetime.strptime("09:30", "%H:%M").time()
-    main_end = datetime.strptime("16:00", "%H:%M").time()
-    post_end = datetime.strptime("20:00", "%H:%M").time()
-
-    if pre_start <= current_time < main_start:
-        return "Pre-Market", "الأسهم الفعالة ماقبل السوق"
-    if main_start <= current_time < main_end:
-        return "Main Session", "الأسهم الفعالة للجلسة الرئيسة"
-    if main_end <= current_time <= post_end:
-        return "Post-Market", "الأسهم الفعالة لجلسة post"
+    current_time = current_ny.time()
+    for s_key, s_title, s_start, s_end in SESSION_WINDOWS:
+        if s_start <= current_time < s_end:
+            return s_key, s_title
 
     return None, None
 
@@ -798,47 +898,19 @@ def filter_signal_stocks(
     raw_stocks: List[dict],
     session_key: str,
     positive_only: bool = False,
-    skip_tickers: Optional[set] = None,
+    skip_tickers: Optional[Set[str]] = None,
 ) -> List[dict]:
-    skip_tickers = skip_tickers or set()
-    min_volume = 1000 if session_name_is_pre(session_key) else 10000
-    valid = []
-
+    valid: List[dict] = []
     for stock in raw_stocks:
-        ticker = str(stock.get("row_key", "")).strip().upper()
-        if not ticker or not is_us_stock_ticker(ticker) or ticker in skip_tickers:
-            continue
-
-        price = to_float(stock.get("price"))
-        if price is None or price <= 0:
-            continue
-
-        volume = to_float(stock.get("volume"))
-        if volume is None or volume < min_volume:
-            continue
-
-        if is_excluded_sector(stock):
-            continue
-
-        change_val = to_float(stock.get("change"))
-        if positive_only and (change_val is None or change_val <= 0):
-            continue
-
-        change_str = str(stock.get("change", "0%"))
-        if not change_str.startswith("+") and not change_str.startswith("-") and change_val and change_val > 0:
-            change_str = "+" + change_str
-
-        valid.append({
-            "ticker": ticker,
-            "price": price,
-            "change": change_val if change_val is not None else 0.0,
-            "change_str": change_str,
-        })
+        item = is_stock_eligible(stock, session_key, positive_only=positive_only, skip_tickers=skip_tickers)
+        if item:
+            valid.append({
+                "ticker": item["ticker"],
+                "price": item["price"],
+                "change": item["change"],
+                "change_str": item["change_str"],
+            })
     return valid
-
-
-def session_name_is_pre(session_key: str) -> bool:
-    return session_key == "Pre-Market"
 
 
 def fetch_all_signals() -> Dict[str, List[dict]]:
@@ -859,7 +931,8 @@ def build_summary_report(
     signals_data: Dict[str, List[dict]],
     state: dict,
 ) -> Optional[str]:
-    last_summary_set = set(state.get("last_summary_tickers", []))
+    summary_by_session = state.setdefault("last_summary_tickers", {})
+    last_summary_set = set(summary_by_session.get(session_key, []))
 
     gainers = filter_signal_stocks(signals_data.get("ta_topgainers", []), session_key, positive_only=True)
     if not gainers:
@@ -868,40 +941,39 @@ def build_summary_report(
     gainers.sort(key=lambda x: x["change"], reverse=True)
     top_40 = gainers[:40]
 
-    sa_tz = pytz.timezone("Asia/Riyadh")
-    time_sa = datetime.now(sa_tz).strftime("%I:%M %p")
+    time_sa = datetime.now(SA_TZ).strftime("%I:%M %p")
     current_tickers = [item["ticker"] for item in top_40]
 
     lines = [
-        f"⏱️ <b>{session_title} · آخر 3 دقائق · {time_sa} بتوقيت السعودية</b>\n"
+        f"⏱️ <b>{html.escape(session_title)} · آخر 3 دقائق · {time_sa} بتوقيت السعودية</b>\n"
     ]
 
     for idx, item in enumerate(top_40, 1):
         t = item["ticker"]
         tv_url = f"https://www.tradingview.com/chart/?symbol={t}"
-        ch_str = item["change_str"]
+        ch_str = html.escape(item["change_str"])
         new_mark = " 🆕" if t not in last_summary_set else ""
         lines.append(f"{idx}. <a href='{tv_url}'>{t}</a> {ch_str} · ${item['price']:.2f}{new_mark}")
 
-    state["last_summary_tickers"] = current_tickers
+    summary_by_session[session_key] = current_tickers
     return "\n".join(lines)
 
 
 def run_individual_alerts(session_name: str, signals_data: Dict[str, List[dict]], stock_state: dict) -> None:
     batch = signals_data.get("ta_topgainers", [])[:25]
-    send_stock_cards(session_name, batch, "Top Gainers", stock_state, positive_only=False)
+    sent = send_stock_cards(session_name, batch, "Top Gainers", stock_state, positive_only=False)
+    print(f"📩 تم إرسال {sent} تنبيه فردي لجلسة {session_name}.")
 
 
 def seconds_to_next_session_start() -> Optional[float]:
-    ny_tz = pytz.timezone("America/New_York")
-    now_ny = datetime.now(ny_tz)
-    starts = [(4, 0), (9, 30), (16, 0)]
+    now_ny = datetime.now(NY_TZ)
+    starts = [(s_start.hour, s_start.minute) for _, _, s_start, _ in SESSION_WINDOWS]
     for day_offset in range(0, 8):
         day = now_ny + timedelta(days=day_offset)
         if day.weekday() >= 5:
             continue
         for h, m in starts:
-            cand = ny_tz.localize(datetime(day.year, day.month, day.day, h, m))
+            cand = NY_TZ.localize(datetime(day.year, day.month, day.day, h, m))
             if cand > now_ny:
                 return (cand - now_ny).total_seconds()
     return None
@@ -911,54 +983,88 @@ def run_session_batch() -> None:
     print(f"🚀 تشغيل رادار الأسهم الأمريكية (Finviz + VWAP / MA100-200 / {LOOKBACK_BARS} شمعة)...")
     start_time = time.time()
     state = load_state()
-    last_session_key = None
+    last_session_key: Optional[str] = None
     next_tick = start_time
 
-    while True:
-        if time.time() - start_time >= MAX_RUN_SECONDS:
-            print("⏱️ تم الوصول للحد الزمني الآمن للدفعة الحالية.")
-            break
-
-        session_key, session_title = get_market_session_and_name()
-
-        if session_key:
-            if not state.get("was_open"):
-                send_telegram_message(f"🟢 <b>بدء رادار التداول الحركي لـ {session_title}</b>")
-                state["was_open"] = True
-            elif last_session_key and session_key != last_session_key:
-                send_telegram_message(f"🟢 <b>بدء رادار التداول الحركي لـ {session_title}</b>")
-
-            if session_key != last_session_key:
-                next_tick = time.time()
-            last_session_key = session_key
-
-            try:
-                signals_data = fetch_all_signals()
-                report_message = build_summary_report(session_key, session_title, signals_data, state)
-                if report_message and send_telegram_message(report_message, parse_mode="HTML"):
-                    print("✅ تم إرسال التقرير المجمع بنجاح.")
-
-                run_individual_alerts(session_key, signals_data, state.setdefault("stocks", {}))
-                save_state(state)
-            except Exception as e:
-                print(f"❌ خطأ في الدورة الحالية (سيستمر الرادار): {e}")
-
-            now = time.time()
-            next_tick += INTERVAL_SECONDS
-            while next_tick <= now:
-                next_tick += INTERVAL_SECONDS
-
-            wake_at = next_tick
-            to_boundary = seconds_to_next_session_start()
-            if to_boundary is not None:
-                wake_at = min(next_tick, now + to_boundary + 0.2)
-
-            if wake_at - start_time >= MAX_RUN_SECONDS:
+    try:
+        while True:
+            elapsed = time.time() - start_time
+            if elapsed >= MAX_RUN_SECONDS:
+                print("⏱️ تم الوصول للحد الزمني الآمن للدفعة الحالية.")
                 break
 
-            sleep_sec = max(0.0, wake_at - time.time())
-            print(f"💤 التحديث القادم بعد {int(sleep_sec)} ثانية...")
-            time.sleep(sleep_sec)
-        else:
-            if state.get("was_open"):
-                send_telegram_message("🔴 انتهت فترات التداول بالكامل (إغلاق <b>السوق</b>). يتوقف الرادار الآن مؤقتاً...")
+            now_ny = datetime.now(NY_TZ)
+            today_str = now_ny.strftime("%Y-%m-%d")
+            if state.get("date") != today_str:
+                state["date"] = today_str
+                state["stocks"] = {}
+                state["last_summary_tickers"] = {}
+
+            session_key, session_title = get_market_session_and_name(now_ny)
+
+            if session_key and session_title:
+                session_changed = last_session_key is not None and session_key != last_session_key
+                if not state.get("was_open") or session_changed:
+                    send_telegram_message(f"🟢 <b>بدء رادار التداول الحركي لـ {html.escape(session_title)}</b>")
+                    state["was_open"] = True
+                    state["last_open_session"] = session_key
+
+                if session_key != last_session_key:
+                    next_tick = time.time()
+                last_session_key = session_key
+
+                try:
+                    signals_data = fetch_all_signals()
+                    report_message = build_summary_report(session_key, session_title, signals_data, state)
+                    if report_message and send_telegram_message(report_message, parse_mode="HTML"):
+                        print(f"✅ تم إرسال التقرير المجمع لجلسة {session_key}.")
+
+                    run_individual_alerts(session_key, signals_data, state.setdefault("stocks", {}))
+                    save_state(state)
+                except Exception as e:
+                    print(f"❌ خطأ في الدورة الحالية (سيستمر الرادار): {e}")
+
+                now = time.time()
+                next_tick += INTERVAL_SECONDS
+                while next_tick <= now:
+                    next_tick += INTERVAL_SECONDS
+
+                wake_at = next_tick
+                to_boundary = seconds_to_next_session_start()
+                if to_boundary is not None:
+                    wake_at = min(wake_at, now + to_boundary + 0.2)
+
+                remaining_budget = MAX_RUN_SECONDS - (time.time() - start_time)
+                if remaining_budget <= 0 or (wake_at - start_time) >= MAX_RUN_SECONDS:
+                    print("⏱️ إيقاف الانتظار لتجاوز الحد الزمني للدفعة الحالية.")
+                    break
+
+                sleep_sec = max(0.0, min(wake_at - time.time(), remaining_budget))
+                print(f"💤 التحديث القادم بعد {int(sleep_sec)} ثانية...")
+                time.sleep(sleep_sec)
+            else:
+                if state.get("was_open"):
+                    send_telegram_message("🔴 انتهت فترات التداول بالكامل (إغلاق <b>السوق</b>). يتوقف الرادار الآن مؤقتاً...")
+                    state["was_open"] = False
+                    save_state(state)
+                last_session_key = None
+
+                to_next = seconds_to_next_session_start()
+                if to_next is None:
+                    print("🛑 لا توجد جلسة تداول قادمة قريبة.")
+                    break
+
+                remaining_budget = MAX_RUN_SECONDS - (time.time() - start_time)
+                if remaining_budget <= 1.0:
+                    print("🌙 السوق مغلق وانتهى وقت الدفعة الحالية.")
+                    break
+
+                sleep_sec = max(0.0, min(to_next + 0.5, remaining_budget))
+                print(f"🌙 السوق مغلق حالياً؛ الانتظار لمدة {int(sleep_sec)} ثانية...")
+                time.sleep(sleep_sec)
+    finally:
+        save_state(state)
+
+
+if __name__ == "__main__":
+    run_session_batch()
