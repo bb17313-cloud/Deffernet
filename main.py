@@ -961,4 +961,4 @@ def run_session_batch() -> None:
             time.sleep(sleep_sec)
         else:
             if state.get("was_open"):
-                send_telegram_message("🔴 <b>انتهت فترات التداول بالكامل (إغلاق السوق). يتوقف الرادار الآن مؤقتاً لح
+                send_telegram_message("🔴 انتهت فترات التداول بالكامل (إغلاق <b>السوق</b>). يتوقف الرادار الآن مؤقتاً...")
