@@ -27,8 +27,8 @@ MAX_RUN_SECONDS = int(os.getenv("RADAR_MAX_RUN_SECONDS", "3300"))    # 55 دقي
 
 LOOKBACK_BARS = int(os.getenv("STRATEGY_LOOKBACK_BARS", "400"))      # آخر 400 شمعة حسب الفاصل
 MA_TYPE = (os.getenv("STRATEGY_MA_TYPE", "EMA") or "EMA").strip().upper()  # EMA أو SMA
+MIN_PRICE_STEP_PCT = float(os.getenv("RADAR_MIN_PRICE_STEP_PCT", "0.5"))  # الحد الأدنى لنسبة ارتفاع السعر لإعادة التنبيه
 
-# دعم جميع الأطر الزمنية المتاحة للأسهم (مفصولة بفاصلة في متغير RADAR_INTERVALS)
 SUPPORTED_INTERVALS = ["1m", "2m", "5m", "15m", "30m", "1h", "4h", "1d", "1wk", "1mo"]
 INTRADAY_INTERVALS = {"1m", "2m", "5m", "15m", "30m", "1h", "4h"}
 RAW_INTERVALS = (os.getenv("RADAR_INTERVALS") or os.getenv("RADAR_INTERVAL") or "5m,15m,1h,1d").strip()
@@ -106,6 +106,7 @@ def create_finviz_session() -> requests.Session:
 
 finviz_session = create_finviz_session()
 translator = Translator()
+translation_cache: Dict[str, str] = {}
 
 
 def to_float(value) -> Optional[float]:
@@ -212,9 +213,13 @@ def save_state(state: dict) -> None:
 def translate_to_arabic(text: str) -> str:
     if not text or text == "لايوجد":
         return "لايوجد"
+    if text in translation_cache:
+        return translation_cache[text]
     try:
         translated = translator.translate(text, dest="ar")
-        return translated.text
+        result = translated.text or text
+        translation_cache[text] = result
+        return result
     except Exception as e:
         print(f"⚠️ خطأ في الترجمة: {e}")
         return text
@@ -369,7 +374,7 @@ def get_rel_vol_status(rvol_value) -> str:
         return "اعلى"
     if val >= 0.8:
         return "عادي"
-    return "ظعيف"
+    return "ضعيف"
 
 
 SEC_8K_ITEMS = {
@@ -503,48 +508,7 @@ def parse_candle_ny_dt(ts) -> Optional[datetime]:
         return None
 
 
-def fetch_candles_for_interval(symbol: str, interval: str) -> List[Candle]:
-    period = INTERVAL_PERIOD_MAP.get(interval, "30d")
-    ticker = yf.Ticker(symbol)
-
-    if interval == "4h":
-        df = ticker.history(period=period, interval="1h", prepost=True, auto_adjust=True)
-        if df is None or df.empty:
-            raise ValueError(f"لا توجد بيانات كافية لبناء 4h لـ {symbol}")
-        candles_1h: List[Candle] = []
-        for ts, row in df.iterrows():
-            o = to_float(row.get("Open"))
-            h = to_float(row.get("High"))
-            l = to_float(row.get("Low"))
-            c = to_float(row.get("Close"))
-            v = to_float(row.get("Volume")) or 0.0
-            if None in (o, h, l, c) or min(o, h, l, c) <= 0:
-                continue
-            candles_1h.append(
-                Candle(time=str(ts), open=o, high=h, low=l, close=c, volume=max(0.0, v), ny_dt=parse_candle_ny_dt(ts))
-            )
-
-        merged_4h: List[Candle] = []
-        for idx in range(0, len(candles_1h) - 3, 4):
-            chunk = candles_1h[idx : idx + 4]
-            merged_4h.append(
-                Candle(
-                    time=chunk[0].time,
-                    open=chunk[0].open,
-                    high=max(x.high for x in chunk),
-                    low=min(x.low for x in chunk),
-                    close=chunk[-1].close,
-                    volume=sum(x.volume for x in chunk),
-                    ny_dt=chunk[-1].ny_dt,
-                )
-            )
-        if len(merged_4h) >= 205:
-            return merged_4h
-
-    df = ticker.history(period=period, interval=interval, prepost=True, auto_adjust=True)
-    if df is None or df.empty:
-        raise ValueError(f"لا توجد بيانات شموع لـ {symbol} على إطار {interval}")
-
+def _df_to_candles(df) -> List[Candle]:
     candles: List[Candle] = []
     for ts, row in df.iterrows():
         o = to_float(row.get("Open"))
@@ -557,7 +521,57 @@ def fetch_candles_for_interval(symbol: str, interval: str) -> List[Candle]:
         candles.append(
             Candle(time=str(ts), open=o, high=h, low=l, close=c, volume=max(0.0, v), ny_dt=parse_candle_ny_dt(ts))
         )
+    return candles
 
+
+def merge_4h_candles(candles_1h: List[Candle]) -> List[Candle]:
+    buckets: Dict[Tuple[str, int], List[Candle]] = {}
+    ordered_keys: List[Tuple[str, int]] = []
+    for c in candles_1h:
+        if c.ny_dt is None:
+            continue
+        block_hour = (c.ny_dt.hour // 4) * 4
+        key = (c.ny_dt.strftime("%Y-%m-%d"), block_hour)
+        if key not in buckets:
+            buckets[key] = []
+            ordered_keys.append(key)
+        buckets[key].append(c)
+
+    merged: List[Candle] = []
+    for key in ordered_keys:
+        chunk = buckets[key]
+        if not chunk:
+            continue
+        merged.append(
+            Candle(
+                time=chunk[0].time,
+                open=chunk[0].open,
+                high=max(x.high for x in chunk),
+                low=min(x.low for x in chunk),
+                close=chunk[-1].close,
+                volume=sum(x.volume for x in chunk),
+                ny_dt=chunk[-1].ny_dt,
+            )
+        )
+    return merged
+
+
+def fetch_candles_for_interval(symbol: str, interval: str) -> List[Candle]:
+    period = INTERVAL_PERIOD_MAP.get(interval, "30d")
+    ticker = yf.Ticker(symbol)
+
+    if interval == "4h":
+        df_1h = ticker.history(period=period, interval="1h", prepost=True, auto_adjust=True)
+        if df_1h is not None and not df_1h.empty:
+            merged_4h = merge_4h_candles(_df_to_candles(df_1h))
+            if len(merged_4h) >= 205:
+                return merged_4h
+
+    df = ticker.history(period=period, interval=interval, prepost=True, auto_adjust=True)
+    if df is None or df.empty:
+        raise ValueError(f"لا توجد بيانات شموع لـ {symbol} على إطار {interval}")
+
+    candles = _df_to_candles(df)
     if len(candles) < 205:
         raise ValueError(f"عدد الشموع قليل ({len(candles)}) لحساب المتوسطات والهيكل لـ {symbol} على {interval}")
     return candles
@@ -648,10 +662,10 @@ def find_last_swing_low(candles: List[Candle], left: int = 3, right: int = 3) ->
 
 def analyze_single_timeframe(symbol: str, interval: str, live_price: float) -> Optional[TimeframeVwapSetup]:
     """
-    تحليل السهم بدون تشان لون:
-    - الدخول من VWAP
+    استراتيجية VWAP + المتوسطات + الهيكل (بدون ChanLun):
+    - الدخول من VWAP (ارتداد أو ثبات فوق VWAP)
     - الوقف: كسر VWAP / كسر متوسط 200 / كسر الهيكل (آخر قاع Swing Low)
-    - 4 أهداف + هدفان بعيدان من (متوسط 100، متوسط 200، القمم السابقة ضمن 400 شمعة)
+    - 4 أهداف + هدفان بعيدان من (متوسط 100، متوسط 200، القمم السابقة ضمن آخر 400 شمعة)
     """
     try:
         all_candles = fetch_candles_for_interval(symbol, interval)
@@ -815,14 +829,19 @@ def send_stock_cards(
         key = f"{session_name}:{ticker}"
         last = stock_state.get(key)
 
-        if last and price <= last.get("price", 0.0):
+        if last:
+            prev_price = float(last.get("price", 0.0))
+            required_price = prev_price * (1.0 + (MIN_PRICE_STEP_PCT / 100.0))
+            if price < required_price:
+                continue
+
+        tf_setups = analyze_all_timeframes(ticker, price)
+        if not tf_setups:
             continue
 
         alert_no = (last.get("alert_no", 0) + 1) if last else 1
-
         stock_news = fetch_stock_news(ticker)
         sec_summary, cik_val, _ = fetch_sec_filings_only(ticker)
-        tf_setups = analyze_all_timeframes(ticker, price)
 
         rel_vol = str(raw.get("revol", "")).strip() or str(raw.get("rel_volume", "")).strip()
         float_val = str(raw.get("float", "")).strip()
@@ -849,19 +868,18 @@ def send_stock_cards(
         if float_val and float_val not in ["-", "nan", "None", ""]:
             message_lines.append(f"🌊 الفلوت: <code>{html.escape(float_val)}</code>")
 
-        if tf_setups:
-            message_lines.append(f"\n🎯 <b>استراتيجية VWAP (آخر {LOOKBACK_BARS} شمعة · {html.escape(MA_TYPE)})</b>")
-            for tf in tf_setups:
-                t4_str = " · ".join([f"هـ{i+1}:<code>{v:.2f}</code>" for i, v in enumerate(tf.targets_4)])
-                f2_str = " · ".join([f"بعيد{i+1}:<code>{v:.2f}</code>" for i, v in enumerate(tf.far_targets_2)])
-                stops_str = " / ".join(tf.stop_reasons)
-                message_lines.extend([
-                    f"▪️ <b>إطار {html.escape(tf.interval)}</b> | دخول VWAP: <code>{tf.entry_price:.2f}</code> (VWAP: <code>{tf.vwap:.2f}</code>)",
-                    f"   متوسطات: 100=<code>{tf.ma_100:.2f}</code> · 200=<code>{tf.ma_200:.2f}</code>",
-                    f"   🛑 وقف: <code>{tf.stop_loss:.2f}</code> ({html.escape(stops_str)})",
-                    f"   🎯 أهداف (4): {t4_str}",
-                    f"   🚀 بعيدة (2): {f2_str}",
-                ])
+        message_lines.append(f"\n🎯 <b>استراتيجية VWAP (آخر {LOOKBACK_BARS} شمعة · {html.escape(MA_TYPE)})</b>")
+        for tf in tf_setups:
+            t4_str = " · ".join([f"هـ{i+1}:<code>{v:.2f}</code>" for i, v in enumerate(tf.targets_4)])
+            f2_str = " · ".join([f"بعيد{i+1}:<code>{v:.2f}</code>" for i, v in enumerate(tf.far_targets_2)])
+            stops_str = " / ".join(tf.stop_reasons)
+            message_lines.extend([
+                f"▪️ <b>إطار {html.escape(tf.interval)}</b> | دخول VWAP: <code>{tf.entry_price:.2f}</code> (VWAP: <code>{tf.vwap:.2f}</code>)",
+                f"   متوسطات: 100=<code>{tf.ma_100:.2f}</code> · 200=<code>{tf.ma_200:.2f}</code>",
+                f"   🛑 وقف: <code>{tf.stop_loss:.2f}</code> ({html.escape(stops_str)})",
+                f"   🎯 أهداف (4): {t4_str}",
+                f"   🚀 بعيدة (2): {f2_str}",
+            ])
 
         message_lines.extend([
             f"\n📄 <b>آخر إفصاحات SEC</b>",
