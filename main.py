@@ -20,8 +20,23 @@ CHAT_ID = (os.getenv("CHAT_ID") or os.getenv("TELEGRAM_CHAT_ID") or "").strip()
 STATE_FILE = os.getenv("RADAR_STATE_FILE", "radar_state.json")
 INTERVAL_SECONDS = int(os.getenv("RADAR_INTERVAL_SECONDS", "180"))  # كل 3 دقائق
 MAX_RUN_SECONDS = int(os.getenv("RADAR_MAX_RUN_SECONDS", "3300"))    # 55 دقيقة كحد أقصى لكل تشغيل
-CHAN_INTERVAL = os.getenv("CHAN_INTERVAL", "15m").strip() or "15m"
-CHAN_PERIOD = os.getenv("CHAN_PERIOD", "5d").strip() or "5d"
+
+# دعم جميع الأطر الزمنية المتاحة للأسهم (مفصولة بفاصلة في متغير CHAN_INTERVALS)
+SUPPORTED_INTERVALS = ["1m", "2m", "5m", "15m", "30m", "1h", "4h", "1d", "1wk", "1mo"]
+RAW_CHAN_INTERVALS = (os.getenv("CHAN_INTERVALS") or os.getenv("CHAN_INTERVAL") or "5m,15m,1h,1d").strip()
+
+INTERVAL_PERIOD_MAP: Dict[str, str] = {
+    "1m": "5d",
+    "2m": "5d",
+    "5m": "10d",
+    "15m": "15d",
+    "30m": "1mo",
+    "1h": "3mo",
+    "4h": "6mo",
+    "1d": "1y",
+    "1wk": "2y",
+    "1mo": "5y",
+}
 
 FINVIZ_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
@@ -54,7 +69,8 @@ class Pivot:
 
 
 @dataclass
-class ChanSetup:
+class TimeframeChan:
+    interval: str
     bias: str
     zhongshu_low: float
     zhongshu_high: float
@@ -66,6 +82,7 @@ class ChanSetup:
     target_1: float
     target_2: float
     rr_ratio: float
+    divergence: str
 
 
 def create_finviz_session() -> requests.Session:
@@ -96,11 +113,12 @@ def to_float(value) -> Optional[float]:
         return None
 
 
-def is_us_equity_ticker(ticker: str) -> bool:
+def is_us_stock_ticker(ticker: str) -> bool:
+    """التحقق من أن الرمز سهم أمريكي فقط (بدون أوبشن، عقود، عملات، أو أسواق أخرى)."""
     t = str(ticker or "").strip().upper()
     if not t or len(t) > 6:
         return False
-    if "=" in t or "/" in t or "^" in t or "-" in t or "." in t:
+    if any(ch in t for ch in ["=", "/", "^", "-", ".", ":", " "]):
         return False
     if t.endswith("USDT") or t.endswith("USDC") or t.endswith("BUSD"):
         return False
@@ -111,6 +129,15 @@ def is_excluded_sector(stock: dict) -> bool:
     sector = str(stock.get("sector", "")).lower()
     industry = str(stock.get("industry", "")).lower()
     return any(kw in sector or kw in industry for kw in EXCLUDED_SECTOR_KEYWORDS)
+
+
+def get_active_intervals() -> List[str]:
+    selected: List[str] = []
+    for part in RAW_CHAN_INTERVALS.split(","):
+        iv = part.strip()
+        if iv in SUPPORTED_INTERVALS and iv not in selected:
+            selected.append(iv)
+    return selected or ["5m", "15m", "1h", "1d"]
 
 
 def load_state() -> dict:
@@ -238,7 +265,7 @@ def fetch_finviz_signal(signal: str, limit: int = 30) -> List[dict]:
     seen_keys = set()
     for row in parser.rows:
         key = str(row.get("row_key", "")).strip().upper()
-        if not key or key in seen_keys or not is_us_equity_ticker(key):
+        if not key or key in seen_keys or not is_us_stock_ticker(key):
             continue
         seen_keys.add(key)
         row["row_key"] = key
@@ -416,13 +443,44 @@ def fetch_sec_filings_only(symbol: str) -> Tuple[str, Optional[str], str]:
     return sec_summary, cik_str_val, latest_accession
 
 
-def fetch_us_candles(symbol: str, interval: str = CHAN_INTERVAL, period: str = CHAN_PERIOD) -> List[Candle]:
+def fetch_candles_for_interval(symbol: str, interval: str) -> List[Candle]:
+    period = INTERVAL_PERIOD_MAP.get(interval, "15d")
     ticker = yf.Ticker(symbol)
+
+    if interval == "4h":
+        df = ticker.history(period=period, interval="1h", prepost=True, auto_adjust=True)
+        if df is None or df.empty:
+            raise ValueError(f"لا توجد بيانات كافية لبناء 4h لـ {symbol}")
+        candles_1h: List[Candle] = []
+        for ts, row in df.iterrows():
+            o = to_float(row.get("Open"))
+            h = to_float(row.get("High"))
+            l = to_float(row.get("Low"))
+            c = to_float(row.get("Close"))
+            v = to_float(row.get("Volume")) or 0.0
+            if None in (o, h, l, c) or min(o, h, l, c) <= 0:
+                continue
+            candles_1h.append(Candle(time=str(ts), open=o, high=h, low=l, close=c, volume=max(0.0, v)))
+
+        merged_4h: List[Candle] = []
+        for idx in range(0, len(candles_1h) - 3, 4):
+            chunk = candles_1h[idx : idx + 4]
+            merged_4h.append(
+                Candle(
+                    time=chunk[0].time,
+                    open=chunk[0].open,
+                    high=max(x.high for x in chunk),
+                    low=min(x.low for x in chunk),
+                    close=chunk[-1].close,
+                    volume=sum(x.volume for x in chunk),
+                )
+            )
+        if len(merged_4h) >= 12:
+            return merged_4h
+
     df = ticker.history(period=period, interval=interval, prepost=True, auto_adjust=True)
     if df is None or df.empty:
-        df = ticker.history(period="1mo", interval="1h", prepost=True, auto_adjust=True)
-    if df is None or df.empty:
-        raise ValueError(f"لا توجد بيانات شموع كافية لـ {symbol}")
+        raise ValueError(f"لا توجد بيانات شموع لـ {symbol} على إطار {interval}")
 
     candles: List[Candle] = []
     for ts, row in df.iterrows():
@@ -435,8 +493,8 @@ def fetch_us_candles(symbol: str, interval: str = CHAN_INTERVAL, period: str = C
             continue
         candles.append(Candle(time=str(ts), open=o, high=h, low=l, close=c, volume=max(0.0, v)))
 
-    if len(candles) < 15:
-        raise ValueError(f"عدد الشموع قليل ({len(candles)}) لـ {symbol}")
+    if len(candles) < 12:
+        raise ValueError(f"عدد الشموع قليل ({len(candles)}) لـ {symbol} على {interval}")
     return candles
 
 
@@ -484,15 +542,32 @@ def extract_zhongshu(pivots: List[Pivot], candles: List[Candle]) -> Tuple[float,
     return zs_low, zs_high
 
 
-def analyze_chanlun(symbol: str, live_price: float) -> Optional[ChanSetup]:
+def detect_divergence(pivots: List[Pivot], candles: List[Candle]) -> str:
+    tops = [p for p in pivots if p.kind == "top"]
+    bottoms = [p for p in pivots if p.kind == "bottom"]
+    if len(tops) >= 2 and tops[-1].price > tops[-2].price:
+        prev_vol = candles[tops[-2].index].volume
+        curr_vol = candles[tops[-1].index].volume
+        if prev_vol > 0 and curr_vol < prev_vol * 0.85:
+            return "تباعد قمة محتمل (ضعف زخم)"
+    if len(bottoms) >= 2 and bottoms[-1].price < bottoms[-2].price:
+        prev_vol = candles[bottoms[-2].index].volume
+        curr_vol = candles[bottoms[-1].index].volume
+        if prev_vol > 0 and curr_vol < prev_vol * 0.85:
+            return "تباعد قاع محتمل (ضعف هبوط)"
+    return "بدون تباعد لافت"
+
+
+def analyze_single_timeframe(symbol: str, interval: str, live_price: float) -> Optional[TimeframeChan]:
     try:
-        candles = fetch_us_candles(symbol)
+        candles = fetch_candles_for_interval(symbol, interval)
     except Exception as e:
-        print(f"⚠️ تعذر جلب شموع تشان لون لـ {symbol}: {e}")
+        print(f"⚠️ تعذر تحليل {symbol} على إطار {interval}: {e}")
         return None
 
     pivots = detect_pivots(candles)
     zs_low, zs_high = extract_zhongshu(pivots, candles)
+    divergence = detect_divergence(pivots, candles)
     ref_price = live_price if live_price > 0 else candles[-1].close
 
     recent_bottoms = [p.price for p in pivots if p.kind == "bottom"][-2:]
@@ -531,7 +606,8 @@ def analyze_chanlun(symbol: str, live_price: float) -> Optional[ChanSetup]:
     mid_entry = (entry_low + entry_high) / 2
     rr_ratio = round(abs(target_1 - mid_entry) / max(risk, 0.01), 2)
 
-    return ChanSetup(
+    return TimeframeChan(
+        interval=interval,
         bias=bias,
         zhongshu_low=round(zs_low, 2),
         zhongshu_high=round(zs_high, 2),
@@ -543,10 +619,27 @@ def analyze_chanlun(symbol: str, live_price: float) -> Optional[ChanSetup]:
         target_1=round(target_1, 2),
         target_2=round(target_2, 2),
         rr_ratio=rr_ratio,
+        divergence=divergence,
     )
 
 
-def send_stock_cards(session_name: str, stocks: List[dict], signal_label: str, stock_state: dict, positive_only: bool = False, skip_tickers: Optional[set] = None) -> int:
+def analyze_all_timeframes(symbol: str, live_price: float) -> List[TimeframeChan]:
+    results: List[TimeframeChan] = []
+    for iv in get_active_intervals():
+        res = analyze_single_timeframe(symbol, iv, live_price)
+        if res:
+            results.append(res)
+    return results
+
+
+def send_stock_cards(
+    session_name: str,
+    stocks: List[dict],
+    signal_label: str,
+    stock_state: dict,
+    positive_only: bool = False,
+    skip_tickers: Optional[set] = None,
+) -> int:
     sent = 0
     skip_tickers = skip_tickers or set()
     min_volume = 1000 if session_name == "Pre-Market" else 10000
@@ -554,7 +647,7 @@ def send_stock_cards(session_name: str, stocks: List[dict], signal_label: str, s
     for stock in stocks:
         ticker = str(stock.get("row_key", "")).strip().upper()
         price = to_float(stock.get("price"))
-        if not ticker or not is_us_equity_ticker(ticker) or price is None or price <= 0:
+        if not ticker or not is_us_stock_ticker(ticker) or price is None or price <= 0:
             continue
 
         if ticker in skip_tickers:
@@ -582,7 +675,7 @@ def send_stock_cards(session_name: str, stocks: List[dict], signal_label: str, s
 
         stock_news = fetch_stock_news(ticker)
         sec_summary, cik_val, _ = fetch_sec_filings_only(ticker)
-        chan = analyze_chanlun(ticker, price)
+        tf_analyses = analyze_all_timeframes(ticker, price)
 
         rel_vol = str(stock.get("revol", "")).strip() or str(stock.get("rel_volume", "")).strip()
         float_val = str(stock.get("float", "")).strip()
@@ -591,7 +684,7 @@ def send_stock_cards(session_name: str, stocks: List[dict], signal_label: str, s
         sec_page_url = f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={cik_val or ticker}&type=&dateb=&owner=include&count=40"
 
         message_lines = [
-            f"🚨 <b>تنبيه {alert_no}</b> · {html.escape(session_name)}",
+            f"🚨 <b>تنبيه {alert_no}</b> · {html.escape(session_name)} (أسهم فقط)",
             f"📡 Signal: <b>{html.escape(signal_label)}</b>\n",
             f"🔹 <b>{html.escape(ticker)}</b>",
             f"💵 <code>${price:.2f}</code> · 📈 <code>{html.escape(str(stock.get('change', '-')))}</code>",
@@ -609,16 +702,15 @@ def send_stock_cards(session_name: str, stocks: List[dict], signal_label: str, s
         if float_val and float_val not in ["-", "nan", "None", ""]:
             message_lines.append(f"🌊 الفلوت: <code>{html.escape(float_val)}</code>")
 
-        if chan:
-            message_lines.extend([
-                f"\n📐 <b>تحليل تشان لون ({html.escape(CHAN_INTERVAL)})</b>",
-                f"• الاتجاه: <b>{html.escape(chan.bias)}</b>",
-                f"• 中枢: <code>{chan.zhongshu_low:.2f} - {chan.zhongshu_high:.2f}</code>",
-                f"• الدعم / المقاومة: <code>{chan.support:.2f}</code> / <code>{chan.resistance:.2f}</code>",
-                f"• الدخول: <code>{chan.entry_low:.2f} - {chan.entry_high:.2f}</code>",
-                f"• الخروج / وقف الخسارة: <code>{chan.stop_loss:.2f}</code>",
-                f"• الأهداف: هدف1 <code>{chan.target_1:.2f}</code> | هدف2 <code>{chan.target_2:.2f}</code> (R:R <code>{chan.rr_ratio}</code>)",
-            ])
+        if tf_analyses:
+            message_lines.append("\n📐 <b>تحليل تشان لون على الأطر الزمنية</b>")
+            for tf in tf_analyses:
+                message_lines.extend([
+                    f"▪️ <b>إطار {html.escape(tf.interval)}</b>: <b>{html.escape(tf.bias)}</b> | {html.escape(tf.divergence)}",
+                    f"   中枢: <code>{tf.zhongshu_low:.2f} - {tf.zhongshu_high:.2f}</code> | دعم/مقاومة: <code>{tf.support:.2f}</code> / <code>{tf.resistance:.2f}</code>",
+                    f"   دخول: <code>{tf.entry_low:.2f} - {tf.entry_high:.2f}</code> | خروج: <code>{tf.stop_loss:.2f}</code>",
+                    f"   أهداف: هدف1 <code>{tf.target_1:.2f}</code> · هدف2 <code>{tf.target_2:.2f}</code> (R:R <code>{tf.rr_ratio}</code>)",
+                ])
 
         message_lines.extend([
             f"\n📄 <b>آخر إفصاحات SEC</b>",
@@ -661,14 +753,19 @@ def get_market_session_and_name() -> Tuple[Optional[str], Optional[str]]:
     return None, None
 
 
-def filter_signal_stocks(raw_stocks: List[dict], session_key: str, positive_only: bool = False, skip_tickers: Optional[set] = None) -> List[dict]:
+def filter_signal_stocks(
+    raw_stocks: List[dict],
+    session_key: str,
+    positive_only: bool = False,
+    skip_tickers: Optional[set] = None,
+) -> List[dict]:
     skip_tickers = skip_tickers or set()
     min_volume = 1000 if session_key == "Pre-Market" else 10000
     valid = []
 
     for stock in raw_stocks:
         ticker = str(stock.get("row_key", "")).strip().upper()
-        if not ticker or not is_us_equity_ticker(ticker) or ticker in skip_tickers:
+        if not ticker or not is_us_stock_ticker(ticker) or ticker in skip_tickers:
             continue
 
         price = to_float(stock.get("price"))
@@ -711,7 +808,12 @@ def fetch_all_signals() -> Dict[str, List[dict]]:
     return data
 
 
-def build_summary_report(session_key: str, session_title: str, signals_data: Dict[str, List[dict]], state: dict) -> Optional[str]:
+def build_summary_report(
+    session_key: str,
+    session_title: str,
+    signals_data: Dict[str, List[dict]],
+    state: dict,
+) -> Optional[str]:
     last_summary_set = set(state.get("last_summary_tickers", []))
     seen_tickers = set()
 
@@ -795,7 +897,7 @@ def seconds_to_next_session_start() -> Optional[float]:
 
 
 def run_session_batch() -> None:
-    print("🚀 تشغيل رادار السوق الأمريكي (Finviz + تشان لون)...")
+    print("🚀 تشغيل رادار الأسهم الأمريكية (Finviz + تشان لون متعدد الأطر)...")
     start_time = time.time()
     state = load_state()
     last_session_key = None
