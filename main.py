@@ -1,5 +1,6 @@
 import html
 import json
+import math
 import os
 import random
 import time
@@ -21,21 +22,24 @@ STATE_FILE = os.getenv("RADAR_STATE_FILE", "radar_state.json")
 INTERVAL_SECONDS = int(os.getenv("RADAR_INTERVAL_SECONDS", "180"))  # كل 3 دقائق
 MAX_RUN_SECONDS = int(os.getenv("RADAR_MAX_RUN_SECONDS", "3300"))    # 55 دقيقة كحد أقصى لكل تشغيل
 
-# دعم جميع الأطر الزمنية المتاحة للأسهم (مفصولة بفاصلة في متغير CHAN_INTERVALS)
+LOOKBACK_BARS = int(os.getenv("STRATEGY_LOOKBACK_BARS", "400"))      # آخر 400 شمعة حسب الفاصل
+MA_TYPE = (os.getenv("STRATEGY_MA_TYPE", "EMA") or "EMA").strip().upper()  # EMA أو SMA
+
+# دعم جميع الأطر الزمنية المتاحة للأسهم (مفصولة بفاصلة في متغير RADAR_INTERVALS)
 SUPPORTED_INTERVALS = ["1m", "2m", "5m", "15m", "30m", "1h", "4h", "1d", "1wk", "1mo"]
-RAW_CHAN_INTERVALS = (os.getenv("CHAN_INTERVALS") or os.getenv("CHAN_INTERVAL") or "5m,15m,1h,1d").strip()
+RAW_INTERVALS = (os.getenv("RADAR_INTERVALS") or os.getenv("RADAR_INTERVAL") or "5m,15m,1h,1d").strip()
 
 INTERVAL_PERIOD_MAP: Dict[str, str] = {
     "1m": "5d",
-    "2m": "5d",
-    "5m": "10d",
-    "15m": "15d",
-    "30m": "1mo",
-    "1h": "3mo",
-    "4h": "6mo",
-    "1d": "1y",
-    "1wk": "2y",
-    "1mo": "5y",
+    "2m": "10d",
+    "5m": "15d",
+    "15m": "30d",
+    "30m": "60d",
+    "1h": "6mo",
+    "4h": "1y",
+    "1d": "2y",
+    "1wk": "5y",
+    "1mo": "10y",
 }
 
 FINVIZ_HEADERS = {
@@ -61,28 +65,16 @@ class Candle:
 
 
 @dataclass
-class Pivot:
-    index: int
-    time: str
-    price: float
-    kind: str  # "top" or "bottom"
-
-
-@dataclass
-class TimeframeChan:
+class TimeframeVwapSetup:
     interval: str
-    bias: str
-    zhongshu_low: float
-    zhongshu_high: float
-    support: float
-    resistance: float
-    entry_low: float
-    entry_high: float
+    entry_price: float
+    vwap: float
+    ma_100: float
+    ma_200: float
     stop_loss: float
-    target_1: float
-    target_2: float
-    rr_ratio: float
-    divergence: str
+    stop_reasons: List[str]
+    targets_4: List[float]      # TP1 .. TP4
+    far_targets_2: List[float]  # TP5 .. TP6
 
 
 def create_finviz_session() -> requests.Session:
@@ -133,7 +125,7 @@ def is_excluded_sector(stock: dict) -> bool:
 
 def get_active_intervals() -> List[str]:
     selected: List[str] = []
-    for part in RAW_CHAN_INTERVALS.split(","):
+    for part in RAW_INTERVALS.split(","):
         iv = part.strip()
         if iv in SUPPORTED_INTERVALS and iv not in selected:
             selected.append(iv)
@@ -455,7 +447,7 @@ def fetch_sec_filings_only(symbol: str) -> Tuple[str, Optional[str], str]:
 
 
 def fetch_candles_for_interval(symbol: str, interval: str) -> List[Candle]:
-    period = INTERVAL_PERIOD_MAP.get(interval, "15d")
+    period = INTERVAL_PERIOD_MAP.get(interval, "30d")
     ticker = yf.Ticker(symbol)
 
     if interval == "4h":
@@ -486,7 +478,7 @@ def fetch_candles_for_interval(symbol: str, interval: str) -> List[Candle]:
                     volume=sum(x.volume for x in chunk),
                 )
             )
-        if len(merged_4h) >= 12:
+        if len(merged_4h) >= 205:
             return merged_4h
 
     df = ticker.history(period=period, interval=interval, prepost=True, auto_adjust=True)
@@ -504,138 +496,172 @@ def fetch_candles_for_interval(symbol: str, interval: str) -> List[Candle]:
             continue
         candles.append(Candle(time=str(ts), open=o, high=h, low=l, close=c, volume=max(0.0, v)))
 
-    if len(candles) < 12:
-        raise ValueError(f"عدد الشموع قليل ({len(candles)}) لـ {symbol} على {interval}")
+    if len(candles) < 205:
+        raise ValueError(f"عدد الشموع قليل ({len(candles)}) لحساب المتوسطات والهيكل لـ {symbol} على {interval}")
     return candles
 
 
-def detect_pivots(candles: List[Candle]) -> List[Pivot]:
-    raw_pivots: List[Pivot] = []
-    for i in range(1, len(candles) - 1):
-        prev_c, curr_c, next_c = candles[i - 1], candles[i], candles[i + 1]
-        if curr_c.high > prev_c.high and curr_c.high >= next_c.high:
-            raw_pivots.append(Pivot(i, curr_c.time, curr_c.high, "top"))
-        elif curr_c.low < prev_c.low and curr_c.low <= next_c.low:
-            raw_pivots.append(Pivot(i, curr_c.time, curr_c.low, "bottom"))
-
-    alternating: List[Pivot] = []
-    for p in raw_pivots:
-        if not alternating:
-            alternating.append(p)
-            continue
-        last = alternating[-1]
-        if p.kind != last.kind:
-            if p.index - last.index >= 2:
-                alternating.append(p)
-        else:
-            if p.kind == "top" and p.price >= last.price:
-                alternating[-1] = p
-            elif p.kind == "bottom" and p.price <= last.price:
-                alternating[-1] = p
-    return alternating
+def calculate_vwap_series(candles: List[Candle]) -> List[float]:
+    vwap_vals: List[float] = []
+    cum_pv = 0.0
+    cum_vol = 0.0
+    for c in candles:
+        tp = (c.high + c.low + c.close) / 3.0
+        cum_pv += tp * c.volume
+        cum_vol += c.volume
+        vwap_vals.append(cum_pv / cum_vol if cum_vol > 0 else c.close)
+    return vwap_vals
 
 
-def extract_zhongshu(pivots: List[Pivot], candles: List[Candle]) -> Tuple[float, float]:
-    recent = candles[-16:]
-    fallback_low = min(c.low for c in recent)
-    fallback_high = max(c.high for c in recent)
+def calculate_ma_series(closes: List[float], period: int, ma_type: str = "EMA") -> List[Optional[float]]:
+    n = len(closes)
+    result: List[Optional[float]] = [None] * n
+    if n < period:
+        return result
 
-    if len(pivots) < 4:
-        span = max(fallback_high - fallback_low, 0.01)
-        return fallback_low + span * 0.25, fallback_high - span * 0.25
+    if ma_type == "SMA":
+        running_sum = sum(closes[:period])
+        result[period - 1] = running_sum / period
+        for i in range(period, n):
+            running_sum += closes[i] - closes[i - period]
+            result[i] = running_sum / period
+        return result
 
-    ordered = sorted(p.price for p in pivots[-4:])
-    zs_low = ordered[1]
-    zs_high = ordered[2]
-    if zs_low >= zs_high:
-        zs_low = min(c.low for c in candles[-8:])
-        zs_high = max(c.high for c in candles[-8:])
-    return zs_low, zs_high
-
-
-def detect_divergence(pivots: List[Pivot], candles: List[Candle]) -> str:
-    tops = [p for p in pivots if p.kind == "top"]
-    bottoms = [p for p in pivots if p.kind == "bottom"]
-    if len(tops) >= 2 and tops[-1].price > tops[-2].price:
-        prev_vol = candles[tops[-2].index].volume
-        curr_vol = candles[tops[-1].index].volume
-        if prev_vol > 0 and curr_vol < prev_vol * 0.85:
-            return "تباعد قمة محتمل (ضعف زخم)"
-    if len(bottoms) >= 2 and bottoms[-1].price < bottoms[-2].price:
-        prev_vol = candles[bottoms[-2].index].volume
-        curr_vol = candles[bottoms[-1].index].volume
-        if prev_vol > 0 and curr_vol < prev_vol * 0.85:
-            return "تباعد قاع محتمل (ضعف هبوط)"
-    return "بدون تباعد لافت"
+    # EMA
+    sma_init = sum(closes[:period]) / period
+    result[period - 1] = sma_init
+    multiplier = 2.0 / (period + 1.0)
+    prev_ema = sma_init
+    for i in range(period, n):
+        ema_val = (closes[i] - prev_ema) * multiplier + prev_ema
+        result[i] = ema_val
+        prev_ema = ema_val
+    return result
 
 
-def analyze_single_timeframe(symbol: str, interval: str, live_price: float) -> Optional[TimeframeChan]:
+def find_swing_highs(candles: List[Candle], left: int = 3, right: int = 3) -> List[float]:
+    highs = [c.high for c in candles]
+    swings: List[float] = []
+    n = len(highs)
+    for i in range(left, n - right):
+        window = highs[i - left : i + right + 1]
+        if highs[i] == max(window):
+            swings.append(float(highs[i]))
+    return swings
+
+
+def find_last_swing_low(candles: List[Candle], left: int = 3, right: int = 3) -> Optional[float]:
+    lows = [c.low for c in candles]
+    n = len(lows)
+    for i in range(n - right - 1, left - 1, -1):
+        window = lows[i - left : i + right + 1]
+        if lows[i] == min(window):
+            return float(lows[i])
+    return None
+
+
+def analyze_single_timeframe(symbol: str, interval: str, live_price: float) -> Optional[TimeframeVwapSetup]:
+    """
+    تحليل السهم بدون تشان لون:
+    - الدخول من VWAP
+    - الوقف: كسر VWAP / كسر متوسط 200 / كسر الهيكل (آخر قاع Swing Low)
+    - 4 أهداف + هدفان بعيدان من (متوسط 100، متوسط 200، القمم السابقة ضمن 400 شمعة)
+    """
     try:
-        candles = fetch_candles_for_interval(symbol, interval)
+        all_candles = fetch_candles_for_interval(symbol, interval)
     except Exception as e:
         print(f"⚠️ تعذر تحليل {symbol} على إطار {interval}: {e}")
         return None
 
-    pivots = detect_pivots(candles)
-    zs_low, zs_high = extract_zhongshu(pivots, candles)
-    divergence = detect_divergence(pivots, candles)
-    ref_price = live_price if live_price > 0 else candles[-1].close
+    window_candles = all_candles[-LOOKBACK_BARS:] if len(all_candles) >= LOOKBACK_BARS else all_candles
+    closes = [c.close for c in window_candles]
 
-    recent_bottoms = [p.price for p in pivots if p.kind == "bottom"][-2:]
-    recent_tops = [p.price for p in pivots if p.kind == "top"][-2:]
-    swing_low = min(recent_bottoms) if recent_bottoms else min(c.low for c in candles[-12:])
-    swing_high = max(recent_tops) if recent_tops else max(c.high for c in candles[-12:])
+    ma100_series = calculate_ma_series(closes, 100, MA_TYPE)
+    ma200_series = calculate_ma_series(closes, 200, MA_TYPE)
+    vwap_series = calculate_vwap_series(window_candles)
 
-    support = min(zs_low, swing_low)
-    resistance = max(zs_high, swing_high)
+    curr_ma100 = ma100_series[-1]
+    curr_ma200 = ma200_series[-1]
+    curr_vwap = vwap_series[-1]
+    prev_vwap = vwap_series[-2] if len(vwap_series) >= 2 else curr_vwap
 
-    if ref_price > zs_high:
-        bias = "صاعد (فوق 中枢)"
-        entry_low = max(zs_high * 0.997, ref_price * 0.990)
-        entry_high = ref_price
-        stop_loss = min(zs_low, entry_low * 0.985)
-        risk = max(entry_high - stop_loss, 0.01)
-        target_1 = entry_high + risk * 1.5
-        target_2 = max(resistance, entry_high + risk * 2.5)
-    elif ref_price < zs_low:
-        bias = "هابط (تحت 中枢)"
-        entry_low = ref_price
-        entry_high = min(zs_low * 1.003, ref_price * 1.010)
-        stop_loss = max(zs_high, entry_high * 1.015)
-        risk = max(stop_loss - entry_low, 0.01)
-        target_1 = entry_low - risk * 1.5
-        target_2 = min(support, entry_low - risk * 2.5)
-    else:
-        bias = "تذبذب (داخل 中枢)"
-        entry_low = zs_low
-        entry_high = zs_low + (zs_high - zs_low) * 0.25
-        stop_loss = support * 0.992
-        risk = max(entry_high - stop_loss, 0.01)
-        target_1 = zs_high
-        target_2 = max(resistance, zs_high + risk)
+    if None in (curr_ma100, curr_ma200, curr_vwap) or any(math.isnan(x) for x in [curr_ma100, curr_ma200, curr_vwap]):
+        return None
 
-    mid_entry = (entry_low + entry_high) / 2
-    rr_ratio = round(abs(target_1 - mid_entry) / max(risk, 0.01), 2)
+    prev_c = window_candles[-2]
+    curr_c = window_candles[-1]
+    entry_price = live_price if live_price > 0 else curr_c.close
 
-    return TimeframeChan(
+    # شرط الدخول من VWAP: ارتداد أو ثبات واضح أعلى VWAP
+    vwap_rebound = (prev_c.low <= prev_vwap * 1.003) and (entry_price >= curr_vwap * 0.998)
+    vwap_above_hold = (prev_c.close >= prev_vwap * 0.998) and (entry_price >= curr_vwap * 0.998)
+    if not (vwap_rebound or vwap_above_hold):
+        return None
+
+    # وقف الخسارة: كسر VWAP / كسر متوسط 200 / كسر الهيكل (آخر قاع)
+    last_swing_low = find_last_swing_low(window_candles, left=3, right=3)
+    stop_candidates: List[Tuple[float, str]] = [
+        (curr_vwap * 0.998, "كسر VWAP"),
+    ]
+    if curr_ma200 < entry_price:
+        stop_candidates.append((curr_ma200 * 0.998, "كسر متوسط 200"))
+    if last_swing_low is not None and last_swing_low < entry_price:
+        stop_candidates.append((last_swing_low * 0.999, "كسر الهيكل"))
+
+    valid_stops = [s for s in stop_candidates if s[0] < entry_price]
+    if not valid_stops:
+        return None
+
+    # اختيار أعلى مستوى وقف أسفل السعر الحالي (الأقرب والأكثر أماناً)
+    stop_loss = max(s[0] for s in valid_stops)
+    stop_reasons = [s[1] for s in valid_stops]
+
+    # الأهداف (4 أهداف + هدفان بعيدان) من متوسط 100، متوسط 200، والقمم السابقة ضمن 400 شمعة
+    swing_highs = find_swing_highs(window_candles, left=3, right=3)
+    candidate_levels = sorted(
+        set(
+            [
+                lvl
+                for lvl in [curr_ma100, curr_ma200] + swing_highs
+                if lvl is not None and lvl > entry_price * 1.002
+            ]
+        )
+    )
+
+    max_high = max(c.high for c in window_candles)
+    min_low = min(c.low for c in window_candles)
+    wave_span = max(max_high - min_low, entry_price * 0.02)
+
+    step = 1
+    while len(candidate_levels) < 6:
+        projected = max_high + wave_span * (0.25 * step)
+        candidate_levels.append(float(projected))
+        step += 1
+
+    targets_4 = [round(x, 2) for x in candidate_levels[:4]]
+
+    far_1 = max(candidate_levels[4], max_high) if max_high > targets_4[-1] else candidate_levels[4]
+    far_2 = max(candidate_levels[5], far_1 + wave_span * 0.272)
+    if far_2 <= far_1:
+        far_2 = far_1 + wave_span * 0.272
+
+    far_targets_2 = [round(float(far_1), 2), round(float(far_2), 2)]
+
+    return TimeframeVwapSetup(
         interval=interval,
-        bias=bias,
-        zhongshu_low=round(zs_low, 2),
-        zhongshu_high=round(zs_high, 2),
-        support=round(support, 2),
-        resistance=round(resistance, 2),
-        entry_low=round(entry_low, 2),
-        entry_high=round(entry_high, 2),
+        entry_price=round(entry_price, 2),
+        vwap=round(curr_vwap, 2),
+        ma_100=round(curr_ma100, 2),
+        ma_200=round(curr_ma200, 2),
         stop_loss=round(stop_loss, 2),
-        target_1=round(target_1, 2),
-        target_2=round(target_2, 2),
-        rr_ratio=rr_ratio,
-        divergence=divergence,
+        stop_reasons=stop_reasons,
+        targets_4=targets_4,
+        far_targets_2=far_targets_2,
     )
 
 
-def analyze_all_timeframes(symbol: str, live_price: float) -> List[TimeframeChan]:
-    results: List[TimeframeChan] = []
+def analyze_all_timeframes(symbol: str, live_price: float) -> List[TimeframeVwapSetup]:
+    results: List[TimeframeVwapSetup] = []
     for iv in get_active_intervals():
         res = analyze_single_timeframe(symbol, iv, live_price)
         if res:
@@ -686,7 +712,7 @@ def send_stock_cards(
 
         stock_news = fetch_stock_news(ticker)
         sec_summary, cik_val, _ = fetch_sec_filings_only(ticker)
-        tf_analyses = analyze_all_timeframes(ticker, price)
+        tf_setups = analyze_all_timeframes(ticker, price)
 
         rel_vol = str(stock.get("revol", "")).strip() or str(stock.get("rel_volume", "")).strip()
         float_val = str(stock.get("float", "")).strip()
@@ -713,14 +739,18 @@ def send_stock_cards(
         if float_val and float_val not in ["-", "nan", "None", ""]:
             message_lines.append(f"🌊 الفلوت: <code>{html.escape(float_val)}</code>")
 
-        if tf_analyses:
-            message_lines.append("\n📐 <b>تحليل تشان لون على الأطر الزمنية</b>")
-            for tf in tf_analyses:
+        if tf_setups:
+            message_lines.append(f"\n🎯 <b>استراتيجية VWAP (آخر {LOOKBACK_BARS} شمعة · {html.escape(MA_TYPE)})</b>")
+            for tf in tf_setups:
+                t4_str = " · ".join([f"هـ{i+1}:<code>{v:.2f}</code>" for i, v in enumerate(tf.targets_4)])
+                f2_str = " · ".join([f"بعيد{i+1}:<code>{v:.2f}</code>" for i, v in enumerate(tf.far_targets_2)])
+                stops_str = " / ".join(tf.stop_reasons)
                 message_lines.extend([
-                    f"▪️ <b>إطار {html.escape(tf.interval)}</b>: <b>{html.escape(tf.bias)}</b> | {html.escape(tf.divergence)}",
-                    f"   中枢: <code>{tf.zhongshu_low:.2f} - {tf.zhongshu_high:.2f}</code> | دعم/مقاومة: <code>{tf.support:.2f}</code> / <code>{tf.resistance:.2f}</code>",
-                    f"   دخول: <code>{tf.entry_low:.2f} - {tf.entry_high:.2f}</code> | خروج: <code>{tf.stop_loss:.2f}</code>",
-                    f"   أهداف: هدف1 <code>{tf.target_1:.2f}</code> · هدف2 <code>{tf.target_2:.2f}</code> (R:R <code>{tf.rr_ratio}</code>)",
+                    f"▪️ <b>إطار {html.escape(tf.interval)}</b> | دخول VWAP: <code>{tf.entry_price:.2f}</code> (VWAP: <code>{tf.vwap:.2f}</code>)",
+                    f"   متوسطات: 100=<code>{tf.ma_100:.2f}</code> · 200=<code>{tf.ma_200:.2f}</code>",
+                    f"   🛑 وقف: <code>{tf.stop_loss:.2f}</code> ({html.escape(stops_str)})",
+                    f"   🎯 أهداف (4): {t4_str}",
+                    f"   🚀 بعيدة (2): {f2_str}",
                 ])
 
         message_lines.extend([
@@ -771,7 +801,7 @@ def filter_signal_stocks(
     skip_tickers: Optional[set] = None,
 ) -> List[dict]:
     skip_tickers = skip_tickers or set()
-    min_volume = 1000 if session_key == "Pre-Market" else 10000
+    min_volume = 1000 if session_name_is_pre(session_key) else 10000
     valid = []
 
     for stock in raw_stocks:
@@ -805,6 +835,10 @@ def filter_signal_stocks(
             "change_str": change_str,
         })
     return valid
+
+
+def session_name_is_pre(session_key: str) -> bool:
+    return session_key == "Pre-Market"
 
 
 def fetch_all_signals() -> Dict[str, List[dict]]:
@@ -874,7 +908,7 @@ def seconds_to_next_session_start() -> Optional[float]:
 
 
 def run_session_batch() -> None:
-    print("🚀 تشغيل رادار الأسهم الأمريكية (Finviz + تشان لون متعدد الأطر)...")
+    print(f"🚀 تشغيل رادار الأسهم الأمريكية (Finviz + VWAP / MA100-200 / {LOOKBACK_BARS} شمعة)...")
     start_time = time.time()
     state = load_state()
     last_session_key = None
@@ -927,25 +961,4 @@ def run_session_batch() -> None:
             time.sleep(sleep_sec)
         else:
             if state.get("was_open"):
-                send_telegram_message("🔴 <b>انتهت فترات التداول بالكامل (إغلاق السوق). يتوقف الرادار الآن مؤقتاً لحين الجلسة القادمة.</b>")
-                state["was_open"] = False
-                state["last_summary_tickers"] = []
-                save_state(state)
-
-            wait = seconds_to_next_session_start()
-            elapsed = time.time() - start_time
-            if wait is not None and elapsed + wait < MAX_RUN_SECONDS:
-                print(f"😴 السوق مغلق. الانتظار {int(wait)} ثانية حتى بداية الجلسة القادمة.")
-                time.sleep(wait + 0.2)
-                last_session_key = None
-                continue
-
-            print("😴 السوق مغلق حالياً. إنهاء التشغيل بانتظار الجلسة القادمة.")
-            break
-
-    save_state(state)
-    print("✅ انتهى التشغيل بنجاح.")
-
-
-if __name__ == "__main__":
-    run_session_batch()
+                send_telegram_message("🔴 <b>انتهت فترات التداول بالكامل (إغلاق السوق). يتوقف الرادار الآن مؤقتاً لح
