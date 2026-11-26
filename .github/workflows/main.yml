@@ -1,43 +1,60 @@
-name: CI/CD Main Pipeline
+name: US Stock Finviz ChanLun Radar
 
 on:
-  push:
-    branches: [ "main" ]
   schedule:
-    - cron: '0/10 9-23 * * 1-5'
+    # يعمل كل ساعة من الاثنين إلى الجمعة لتغطية Pre-Market وMain وPost-Market (08:00 - 01:00 UTC)
+    - cron: "0 0,8-23 * * 1-5"
   workflow_dispatch:
+    inputs:
+      chan_interval:
+        description: "الفاصل الزمني لتحليل تشان لون (مثال: 15m, 1h, 1d)"
+        required: false
+        default: "15m"
+      interval_seconds:
+        description: "فترة التحديث بالثواني داخل الجلسة (الافتراضي 180)"
+        required: false
+        default: "180"
 
 permissions:
   contents: write
 
 jobs:
-  run-bot:
+  run-us-radar:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
+
     steps:
-      - name: Checkout code
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: "3.12"
 
       - name: Install dependencies
         run: |
-          pip install requests pytz yfinance
+          python -m pip install --upgrade pip
+          pip install pytz requests urllib3 yfinance googletrans==4.0.0-rc1
 
-      - name: Run Main Bot Script
+      - name: Run US Finviz ChanLun Radar
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
-        run: |
-          python main.py
+          RADAR_STATE_FILE: "radar_state.json"
+          RADAR_INTERVAL_SECONDS: ${{ inputs.interval_seconds || '180' }}
+          RADAR_MAX_RUN_SECONDS: "3300"
+          CHAN_INTERVAL: ${{ inputs.chan_interval || '15m' }}
+          CHAN_PERIOD: "5d"
+        run: python main.py
 
-      - name: Commit and push updated state
+      - name: Persist radar state
+        if: always()
         run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.io"
-          git pull origin main --rebase || echo "No remote changes to rebase"
-          git add alerted_stocks.json
-          git commit -m "Update daily alerted stocks state [skip ci]" || echo "No changes to commit"
-          git push origin main
+          if [ -f radar_state.json ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add radar_state.json
+            git diff --staged --quiet || git commit -m "chore: update radar_state.json"
+            git push || true
+          fi
