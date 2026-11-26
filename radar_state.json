@@ -1,240 +1,49 @@
 {
   "date": "2026-11-26",
-  "stocks": {
-    "Main Session:NRSN": {
-      "price": 1.76,
-      "alert_no": 1
-    },
-    "Main Session:LONA": {
-      "price": 2.71,
-      "alert_no": 1
-    },
-    "Main Session:FCUV": {
-      "price": 5.65,
-      "alert_no": 1
-    },
-    "Main Session:NXAT": {
-      "price": 0.64,
-      "alert_no": 1
-    },
-    "Main Session:ALGS": {
-      "price": 2.26,
-      "alert_no": 1
-    },
-    "Main Session:TMCR": {
-      "price": 2.19,
-      "alert_no": 1
-    },
-    "Main Session:BBCI": {
-      "price": 2.21,
-      "alert_no": 1
-    },
-    "Main Session:MWYN": {
-      "price": 1.53,
-      "alert_no": 1
-    },
-    "Main Session:GLXG": {
-      "price": 1.4,
-      "alert_no": 1
-    },
-    "Main Session:KYNB": {
-      "price": 1.86,
-      "alert_no": 1
-    },
-    "Main Session:SLSN": {
-      "price": 2.26,
-      "alert_no": 1
-    },
-    "Main Session:CURR": {
-      "price": 2.46,
-      "alert_no": 1
-    },
-    "Main Session:SVRE": {
-      "price": 1.47,
-      "alert_no": 1
-    },
-    "Main Session:MCRB": {
-      "price": 1.9,
-      "alert_no": 1
-    },
-    "Main Session:AMBO": {
-      "price": 1.59,
-      "alert_no": 1
-    },
-    "Main Session:BHR": {
-      "price": 1.77,
-      "alert_no": 1
-    },
-    "Main Session:OTLY": {
-      "price": 16.08,
-      "alert_no": 1
-    },
-    "Main Session:KXIN": {
-      "price": 3.02,
-      "alert_no": 1
-    },
-    "Main Session:TOPS": {
-      "price": 2.45,
-      "alert_no": 1
-    },
-    "Main Session:CPIX": {
-      "price": 7.99,
-      "alert_no": 1
-    },
-    "Main Session:MDRN": {
-      "price": 3.17,
-      "alert_no": 1
-    },
-    "Main Session:VRDN": {
-      "price": 37.91,
-      "alert_no": 1
-    },
-    "Main Session:KSS": {
-      "price": 26.7,
-      "alert_no": 1
-    },
-    "Main Session:SNY": {
-      "price": 54.39,
-      "alert_no": 1
-    },
-    "Main Session:DCBO": {
-      "price": 31.91,
-      "alert_no": 1
-    },
-    "Main Session:TGLS": {
-      "price": 57.29,
-      "alert_no": 1
-    },
-    "Main Session:COLM": {
-      "price": 80.75,
-      "alert_no": 1
-    },
-    "Main Session:DIS": {
-      "price": 125.6,
-      "alert_no": 1
-    },
-    "Main Session:USEA": {
-      "price": 3.19,
-      "alert_no": 1
-    },
-    "Main Session:JAN": {
-      "price": 33.83,
-      "alert_no": 1
-    },
-    "Main Session:NPK": {
-      "price": 161.0,
-      "alert_no": 1
-    },
-    "Main Session:OMC": {
-      "price": 90.7,
-      "alert_no": 1
-    },
-    "Main Session:GKOS": {
-      "price": 259.9,
-      "alert_no": 1
-    },
-    "Main Session:GRDN": {
-      "price": 52.11,
-      "alert_no": 1
-    },
-    "Main Session:TAK": {
-      "price": 23.01,
-      "alert_no": 1
-    },
-    "Main Session:EXLS": {
-      "price": 45.1,
-      "alert_no": 1
-    },
-    "Main Session:NIVF": {
-      "price": 0.02,
-      "alert_no": 1
-    },
-    "Main Session:FCHL": {
-      "price": 0.01,
-      "alert_no": 1
-    },
-    "Main Session:ANT": {
-      "price": 82.79,
-      "alert_no": 1
-    },
-    "Main Session:SPCX": {
-      "price": 127.44,
-      "alert_no": 1
-    },
-    "Main Session:PLUG": {
-      "price": 1.07,
-      "alert_no": 1
-    },
-    "Main Session:GRAB": {
-      "price": 2.84,
-      "alert_no": 1
-    },
-    "Main Session:LOOP": {
-      "price": 0.15,
-      "alert_no": 1
-    },
-    "Main Session:RAYA": {
-      "price": 0.65,
-      "alert_no": 1
-    },
-    "Main Session:RIG": {
-      "price": 5.03,
-      "alert_no": 1
-    },
-    "Main Session:BGL": {
-      "price": 0.09,
-      "alert_no": 1
-    },
-    "Main Session:BGLC": {
-      "price": 1.26,
-      "alert_no": 1
-    },
-    "Main Session:RADX": {
-      "price": 0.81,
-      "alert_no": 1
-    },
-    "Main Session:RNAQ": {
-      "price": 10.0,
-      "alert_no": 1
-    },
-    "Main Session:WHLR": {
-      "price": 0.41,
-      "alert_no": 1
-    },
-    "Main Session:LSE": {
-      "price": 5.44,
-      "alert_no": 1
-    },
-    "Main Session:CVR": {
-      "price": 8.5,
-      "alert_no": 1
-    },
-    "Main Session:FLYW": {
-      "price": 23.26,
-      "alert_no": 1
-    }
+  "last_summary_tickers": {
+    "Post-Market": [
+      "NRSN",
+      "LONA",
+      "FCUV",
+      "NXAT",
+      "ALGS",
+      "TMCR",
+      "BBCI",
+      "MWYN",
+      "GLXG",
+      "KYNB",
+      "SLSN",
+      "CURR",
+      "SVRE",
+      "MCRB",
+      "AMBO",
+      "BHR",
+      "OTLY",
+      "KXIN",
+      "TOPS",
+      "CPIX",
+      "FOFO",
+      "EP",
+      "SHPH",
+      "CUE",
+      "BNAI",
+      "DFSC",
+      "CVM",
+      "NUWE",
+      "AGLT",
+      "BYND",
+      "POAS",
+      "APUS",
+      "ASPI",
+      "VMAR",
+      "SEAT",
+      "EGG",
+      "TMC",
+      "SIND",
+      "SVRN",
+      "HBNB"
+    ]
   },
-  "last_summary_tickers": [
-    "BGLC",
-    "RADX",
-    "NRSN",
-    "LONA",
-    "RAYA",
-    "FCUV",
-    "NXAT",
-    "ALGS",
-    "TMCR",
-    "BBCI",
-    "MWYN",
-    "GLXG",
-    "KYNB",
-    "SLSN",
-    "CURR",
-    "SVRE",
-    "MCRB",
-    "AMBO",
-    "BHR",
-    "OTLY"
-  ],
-  "was_open": true
+  "was_open": true,
+  "last_open_session": null
 }
