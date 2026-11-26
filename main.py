@@ -86,13 +86,13 @@ def to_float(value) -> Optional[float]:
 def format_volume(raw_vol, numeric_vol: float) -> str:
     raw_str = str(raw_vol or "").strip()
     if raw_str and raw_str not in {"-", "N/A", "nan", "NaN", "None", ""}:
-        return raw_str
+        return raw_str.replace(" ", "")
     if numeric_vol >= 1_000_000_000:
         return f"{numeric_vol / 1_000_000_000:.2f}B"
     if numeric_vol >= 1_000_000:
         return f"{numeric_vol / 1_000_000:.2f}M"
     if numeric_vol >= 1_000:
-        return f"{numeric_vol / 1_000:.1f}K"
+        return f"{numeric_vol / 1_000:.0f}K"
     return str(int(numeric_vol))
 
 
@@ -354,7 +354,7 @@ def build_summary_report(
     current_tickers = [item["ticker"] for item in top_stocks]
 
     lines = [
-        f"⏱️ <b>{html.escape(session_title)} · آخر 3 دقائق · {time_sa} بتوقيت السعودية</b>\n"
+        f"⏱️ <b>{html.escape(session_title)} · {time_sa}</b>"
     ]
 
     for idx, item in enumerate(top_stocks, 1):
@@ -363,9 +363,7 @@ def build_summary_report(
         ch_str = html.escape(item["change_str"])
         vol_str = html.escape(item["volume_str"])
         new_mark = " 🆕" if t not in last_summary_set else ""
-        lines.append(
-            f"{idx}. <a href='{tv_url}'>{t}</a> {ch_str} · ${item['price']:.2f} · Vol: <code>{vol_str}</code>{new_mark}"
-        )
+        lines.append(f"{idx}. <a href='{tv_url}'>{t}</a> {ch_str} ${item['price']:.2f} V:{vol_str}{new_mark}")
 
     summary_by_session[session_key] = current_tickers
     return "\n".join(lines)
