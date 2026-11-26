@@ -253,7 +253,7 @@ class FinvizNewsParser(HTMLParser):
             self.current_headline.append(data)
 
 
-def fetch_finviz_signal(signal: str, limit: int = 30) -> List[dict]:
+def fetch_finviz_signal(signal: str, limit: int = 25) -> List[dict]:
     url = f"https://finviz.com/screener.ashx?v=111&s={signal}"
     time.sleep(random.uniform(1.5, 3.0))
     res = finviz_session.get(url, timeout=20)
@@ -797,7 +797,7 @@ def filter_signal_stocks(
 
 
 def fetch_all_signals() -> Dict[str, List[dict]]:
-    signals = ["ta_topgainers", "ta_newhigh", "ta_mostactive", "ta_unusualvolume"]
+    signals = ["ta_topgainers"]
     data: Dict[str, List[dict]] = {}
     for sig in signals:
         try:
@@ -815,35 +815,13 @@ def build_summary_report(
     state: dict,
 ) -> Optional[str]:
     last_summary_set = set(state.get("last_summary_tickers", []))
-    seen_tickers = set()
 
     gainers = filter_signal_stocks(signals_data.get("ta_topgainers", []), session_key, positive_only=True)
-    for s in gainers:
-        seen_tickers.add(s["ticker"])
-
-    new_highs = filter_signal_stocks(signals_data.get("ta_newhigh", []), session_key, positive_only=True, skip_tickers=seen_tickers)
-    for s in new_highs:
-        seen_tickers.add(s["ticker"])
-
-    most_active = filter_signal_stocks(signals_data.get("ta_mostactive", []), session_key, positive_only=True, skip_tickers=seen_tickers)
-    for s in most_active:
-        seen_tickers.add(s["ticker"])
-
-    unusual_vol = filter_signal_stocks(signals_data.get("ta_unusualvolume", []), session_key, positive_only=True, skip_tickers=seen_tickers)
-
-    all_combined = gainers + new_highs + most_active + unusual_vol
-    unique_dict = {}
-    for item in all_combined:
-        t = item["ticker"]
-        if t not in unique_dict or item["change"] > unique_dict[t]["change"]:
-            unique_dict[t] = item
-
-    final_list = list(unique_dict.values())
-    if not final_list:
+    if not gainers:
         return None
 
-    final_list.sort(key=lambda x: x["change"], reverse=True)
-    top_20 = final_list[:20]
+    gainers.sort(key=lambda x: x["change"], reverse=True)
+    top_20 = gainers[:20]
 
     sa_tz = pytz.timezone("Asia/Riyadh")
     time_sa = datetime.now(sa_tz).strftime("%I:%M %p")
@@ -865,20 +843,8 @@ def build_summary_report(
 
 
 def run_individual_alerts(session_name: str, signals_data: Dict[str, List[dict]], stock_state: dict) -> None:
-    seen_tickers = set()
-
-    for sig, label, pos_only in [
-        ("ta_topgainers", "Top Gainers", False),
-        ("ta_newhigh", "New High", False),
-        ("ta_mostactive", "Most Active", True),
-        ("ta_unusualvolume", "Unusual Volume", True),
-    ]:
-        batch = signals_data.get(sig, [])
-        send_stock_cards(session_name, batch, label, stock_state, positive_only=pos_only, skip_tickers=seen_tickers)
-        for s in batch:
-            t = str(s.get("row_key", "")).strip().upper()
-            if t:
-                seen_tickers.add(t)
+    batch = signals_data.get("ta_topgainers", [])
+    send_stock_cards(session_name, batch, "Top Gainers", stock_state, positive_only=False)
 
 
 def seconds_to_next_session_start() -> Optional[float]:
