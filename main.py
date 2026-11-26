@@ -253,23 +253,34 @@ class FinvizNewsParser(HTMLParser):
             self.current_headline.append(data)
 
 
-def fetch_finviz_signal(signal: str, limit: int = 25) -> List[dict]:
-    url = f"https://finviz.com/screener.ashx?v=111&s={signal}"
-    time.sleep(random.uniform(1.5, 3.0))
-    res = finviz_session.get(url, timeout=20)
-    res.raise_for_status()
-    parser = FinvizRowsParser()
-    parser.feed(res.text)
-
-    rows = []
+def fetch_finviz_signal(signal: str, limit: int = 40) -> List[dict]:
+    rows: List[dict] = []
     seen_keys = set()
-    for row in parser.rows:
-        key = str(row.get("row_key", "")).strip().upper()
-        if not key or key in seen_keys or not is_us_stock_ticker(key):
-            continue
-        seen_keys.add(key)
-        row["row_key"] = key
-        rows.append(row)
+    offsets = [1, 21] if limit > 20 else [1]
+
+    for start_row in offsets:
+        if len(rows) >= limit:
+            break
+        url = f"https://finviz.com/screener.ashx?v=111&s={signal}&r={start_row}"
+        time.sleep(random.uniform(1.5, 3.0))
+        res = finviz_session.get(url, timeout=20)
+        res.raise_for_status()
+        parser = FinvizRowsParser()
+        parser.feed(res.text)
+
+        if not parser.rows:
+            break
+
+        for row in parser.rows:
+            key = str(row.get("row_key", "")).strip().upper()
+            if not key or key in seen_keys or not is_us_stock_ticker(key):
+                continue
+            seen_keys.add(key)
+            row["row_key"] = key
+            rows.append(row)
+            if len(rows) >= limit:
+                break
+
     return rows[:limit]
 
 
@@ -801,7 +812,7 @@ def fetch_all_signals() -> Dict[str, List[dict]]:
     data: Dict[str, List[dict]] = {}
     for sig in signals:
         try:
-            data[sig] = fetch_finviz_signal(sig, limit=25)
+            data[sig] = fetch_finviz_signal(sig, limit=40)
         except Exception as e:
             print(f"❌ خطأ في جلب إشارة {sig}: {e}")
             data[sig] = []
@@ -821,17 +832,17 @@ def build_summary_report(
         return None
 
     gainers.sort(key=lambda x: x["change"], reverse=True)
-    top_20 = gainers[:20]
+    top_40 = gainers[:40]
 
     sa_tz = pytz.timezone("Asia/Riyadh")
     time_sa = datetime.now(sa_tz).strftime("%I:%M %p")
-    current_tickers = [item["ticker"] for item in top_20]
+    current_tickers = [item["ticker"] for item in top_40]
 
     lines = [
         f"⏱️ <b>{session_title} · آخر 3 دقائق · {time_sa} بتوقيت السعودية</b>\n"
     ]
 
-    for idx, item in enumerate(top_20, 1):
+    for idx, item in enumerate(top_40, 1):
         t = item["ticker"]
         tv_url = f"https://www.tradingview.com/chart/?symbol={t}"
         ch_str = item["change_str"]
@@ -843,7 +854,7 @@ def build_summary_report(
 
 
 def run_individual_alerts(session_name: str, signals_data: Dict[str, List[dict]], stock_state: dict) -> None:
-    batch = signals_data.get("ta_topgainers", [])
+    batch = signals_data.get("ta_topgainers", [])[:25]
     send_stock_cards(session_name, batch, "Top Gainers", stock_state, positive_only=False)
 
 
